@@ -1,0 +1,2 @@
+[web]
+nginx ansible_host=130.193.37.217 ansible_user=user
