@@ -1,0 +1,163 @@
+---
+- name: Настройка и проверка RAID10
+  hosts: all
+  become: true
+  tasks:
+
+    # Установка mdadm
+    - name: Установить mdadm
+      apt:
+        name: mdadm
+        state: present
+        update_cache: yes
+      # mdadm: утилита для управления программными RAID массивами.
+
+    # Создание массива RAID10
+    - name: Создать RAID10 массив
+      command: >
+        mdadm --create /dev/md0 --level=10 --raid-devices=4
+        /dev/vdb /dev/vdc /dev/vdd /dev/vde
+      args:
+        creates: /dev/md0
+      # Создаёт массив RAID10 с 4 дисками: vdb, vdc, vdd, vde.
+
+    # Сохранение конфигурации RAID
+    - name: Сохранить конфигурацию RAID
+      shell: mdadm --detail --scan >> /etc/mdadm/mdadm.conf
+      # Сохраняет конфигурацию RAID в /etc/mdadm/mdadm.conf для автоматической сборки после перезагрузки.
+
+    # Обновление initramfs
+    - name: Обновить initramfs
+      command: update-initramfs -u
+      # Обновляем начальную файловую систему, чтобы включить конфигурацию RAID.
+
+    # Создание GPT-таблицы
+    - name: Создать GPT-таблицу
+      command: parted /dev/md0 --script mklabel gpt
+      # Создаёт GPT таблицу разделов на массиве RAID.
+
+    # Создание 5 разделов
+    - name: Создать 5 разделов
+      shell: |
+        parted /dev/md0 --script mkpart primary ext4 0% 20%
+        parted /dev/md0 --script mkpart primary ext4 20% 40%
+        parted /dev/md0 --script mkpart primary ext4 40% 60%
+        parted /dev/md0 --script mkpart primary ext4 60% 80%
+        parted /dev/md0 --script mkpart primary ext4 80% 100%
+      # Делим RAID массив на 5 равных разделов.
+
+    # Форматирование разделов в ext4
+    - name: Форматировать разделы в ext4
+      loop: "{{ range(1, 6) | list }}"
+      command: mkfs.ext4 /dev/md0p{{ item }}
+      # Форматируем каждый из 5 разделов в файловую систему ext4.
+
+    # Создание точек монтирования
+    - name: Создать точки монтирования
+      loop: "{{ range(1, 6) | list }}"
+      file:
+        path: "/mnt/part{{ item }}"
+        state: directory
+      # Создаём директории для монтирования разделов.
+
+    # Монтирование разделов
+    - name: Смонтировать разделы
+      loop: "{{ range(1, 6) | list }}"
+      mount:
+        path: "/mnt/part{{ item }}"
+        src: "/dev/md0p{{ item }}"
+        fstype: ext4
+        state: mounted
+      # Монтируем разделы в соответствующие директории.
+
+    # Добавление разделов в /etc/fstab
+    - name: Добавить разделы в /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "/dev/md0p{{ item }} /mnt/part{{ item }} ext4 defaults 0 0"
+      loop: "{{ range(1, 6) | list }}"
+      # Добавляем разделы в /etc/fstab для автоматического монтирования при загрузке.
+
+    # Проверка текущего состояния массива
+    - name: Проверить текущее состояние RAID
+      command: cat /proc/mdstat
+      register: raid_status_before_fail
+      # Показывает текущее состояние массива RAID.
+
+    - name: Вывести текущее состояние RAID
+      debug:
+        msg: "{{ raid_status_before_fail.stdout }}"
+
+    # Симуляция отказа диска
+    - name: Симулировать отказ диска
+      command: mdadm --fail /dev/md0 /dev/vdb
+      # Помечает диск vdb как отказавший.
+
+    # Проверка состояния массива после отказа
+    - name: Проверить состояние RAID после отказа диска
+      command: cat /proc/mdstat
+      register: raid_status_after_fail
+
+    - name: Вывести состояние RAID после отказа
+      debug:
+        msg: "{{ raid_status_after_fail.stdout }}"
+
+    # Вывод подробной информации о массиве
+    - name: Вывести подробности массива после отказа
+      command: mdadm --detail /dev/md0
+      register: raid_detail_after_fail
+
+    - name: Показать детали массива после отказа
+      debug:
+        msg: "{{ raid_detail_after_fail.stdout }}"
+
+    # Удаление диска из массива
+    - name: Удалить диск из массива
+      command: mdadm --remove /dev/md0 /dev/vdb
+      # Полностью удаляет диск vdb из массива.
+
+    # Проверка состояния массива после удаления диска
+    - name: Проверить состояние RAID после удаления диска
+      command: cat /proc/mdstat
+      register: raid_status_after_remove
+
+    - name: Вывести состояние RAID после удаления диска
+      debug:
+        msg: "{{ raid_status_after_remove.stdout }}"
+
+    # Вывод подробной информации о массиве
+    - name: Вывести подробности массива после удаления диска
+      command: mdadm --detail /dev/md0
+      register: raid_detail_after_remove
+
+    - name: Показать детали массива после удаления диска
+      debug:
+        msg: "{{ raid_detail_after_remove.stdout }}"
+
+    # Очистка информации RAID с диска
+    - name: Очистить диск от информации о RAID
+      command: mdadm --zero-superblock /dev/vdb
+      # Удаляет суперблок RAID с диска vdb.
+
+    # Восстановление массива
+    - name: Подключить диск обратно в массив
+      command: mdadm --add /dev/md0 /dev/vdb
+      # Добавляет диск vdb обратно в массив RAID.
+
+    # Проверка состояния массива после восстановления
+    - name: Проверить состояние RAID после восстановления
+      command: cat /proc/mdstat
+      register: raid_status_after_repair
+
+    - name: Вывести состояние RAID после восстановления
+      debug:
+        msg: "{{ raid_status_after_repair.stdout }}"
+
+    # Вывод подробной информации о массиве
+    - name: Вывести подробности массива после восстановления
+      command: mdadm --detail /dev/md0
+      register: raid_detail_after_repair
+
+    - name: Показать детали массива после восстановления
+      debug:
+        msg: "{{ raid_detail_after_repair.stdout }}"
