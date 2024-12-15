@@ -1,0 +1,77 @@
+- name: Configure LVM on Ubuntu 24.04
+  hosts: google_vm
+  become: yes
+  vars:
+    home_size: "9.9G"
+    var_size: "20G"
+    mirror_devices:
+      - "/dev/sdc"
+      - "/dev/sdd"
+  tasks:
+    - name: Install required packages
+      apt:
+        name: lvm2
+        state: present
+      tags: lvm
+
+#    - name: Ensure physical volumes exist
+#      command: "pvcreate --force {{ item }}"
+#      with_items:
+#        - "/dev/sdb"
+#        - "/dev/sdc"
+#        - "/dev/sdd"
+#      tags: lvm
+#
+#    - name: Create Volume Groups
+#      command: "vgcreate {{ item.name }} {{ item.devices | join(' ') }}"
+#      with_items:
+#        - { name: "vg_home", devices: ["/dev/sdb"] }
+#        - { name: "vg_var", devices: "{{ mirror_devices }}" }
+#      tags: lvm
+#
+#    - name: Create Logical Volumes (including mirror for /var)
+#      command: >
+#        lvcreate -L {{ item.size }} -n {{ item.name }} {{ item.vg }} {{ item.options | default('') }}
+#      with_items:
+#        - { name: "lv_home", size: "{{ home_size }}", vg: "vg_home" }
+#        - { name: "lv_var", size: "{{ var_size }}", vg: "vg_var", options: "-m1" }
+#      tags: lvm
+#
+#    - name: Create file systems
+#      filesystem:
+#        fstype: ext4
+#        dev: "{{ item }}"
+#      with_items:
+#        - "/dev/vg_home/lv_home"
+#        - "/dev/vg_var/lv_var"
+#      tags: lvm
+#
+#    - name: Mount file systems and configure fstab
+#      blockinfile:
+#        path: /etc/fstab
+#        block: |
+#          /dev/vg_home/lv_home /home ext4 defaults 0 0
+#          /dev/vg_var/lv_var /var ext4 defaults 0 0
+#      tags: lvm
+#
+#    - name: Mount all file systems
+#      command: mount -a
+#      tags: lvm
+#
+#    - name: Generate files in /home
+#      command: "touch /home/file{1..20}"
+#      tags: snapshot
+#
+#    - name: Create snapshot for /home
+#      command: "lvcreate -L 500M -s -n home_snap /dev/vg_home/lv_home"
+#      tags: snapshot
+#
+#    - name: Delete some files from /home
+#      command: "rm -f /home/file{11..20}"
+#      tags: snapshot
+#
+#    - name: Restore from snapshot
+#      command: >
+#        lvconvert --merge /dev/vg_home/home_snap &&
+#        mount /home
+#      tags: snapshot
