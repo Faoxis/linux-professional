@@ -1,0 +1,95 @@
+---
+- hosts: google_vm
+  become: yes
+  tasks:
+    - name: Установить необходимые зависимости
+      apt:
+        name:
+          - golang-go
+          - dpkg-dev
+          - build-essential
+          - nginx
+        state: present
+        update_cache: yes
+
+    - name: Создать рабочую директорию
+      file:
+        path: /tmp/build_package
+        state: directory
+
+    - name: Скопировать исходник Go-приложения на сервер
+      copy:
+        src: ../app/network_scanner.go
+        dest: /tmp/build_package/network_scanner.go
+
+    - name: Собрать Go-приложение
+      command: >
+        go build -o /tmp/build_package/network-scanner
+        /tmp/build_package/network_scanner.go
+      args:
+        chdir: /tmp/build_package
+
+    - name: Создать структуру пакета
+      file:
+        path: "{{ item }}"
+        state: directory
+      with_items:
+        - /tmp/build_package/network-scanner-1.0.0/DEBIAN
+        - /tmp/build_package/network-scanner-1.0.0/usr/local/bin
+
+    - name: Создать control файл
+      copy:
+        dest: /tmp/build_package/network-scanner-1.0.0/DEBIAN/control
+        content: |
+          Package: network-scanner
+          Version: 1.0.0
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Samoilov Sergei <faoxis@mail.ru>
+          Description: Network Scanner Utility
+           A small utility to scan accessible IPs in the local network by subnet.
+
+    - name: Копировать Go-приложение в структуру пакета
+      copy:
+        src: /tmp/build_package/network-scanner
+        dest: /tmp/build_package/network-scanner-1.0.0/usr/local/bin/network-scanner
+        remote_src: yes
+        mode: '0755'
+
+    - name: Собрать DEB пакет
+      command: >
+        dpkg-deb --build /tmp/build_package/network-scanner-1.0.0
+      args:
+        chdir: /tmp/build_package
+
+    - name: Копировать DEB пакет в директорию Nginx
+      copy:
+        src: /tmp/build_package/network-scanner-1.0.0.deb
+        dest: /var/www/html/network-scanner-1.0.0.deb
+        remote_src: yes
+        
+    - name: Сгенерировать индекс APT-репозитория
+      shell: >
+        dpkg-scanpackages . /dev/null | sed 's|Filename: /var/www/html/|Filename: |' | gzip -9 > Packages.gz
+      args:
+        chdir: /var/www/html
+      become: yes
+
+    - name: Настроить Nginx для раздачи репозитория
+      lineinfile:
+        path: /etc/nginx/sites-available/default
+        regexp: "root .*;"
+        line: "root /var/www/html;"
+      notify: Перезапустить Nginx
+
+    - name: Удалить временные файлы
+      file:
+        path: /tmp/build_package
+        state: absent
+
+  handlers:
+    - name: Перезапустить Nginx
+      service:
+        name: nginx
+        state: restarted
