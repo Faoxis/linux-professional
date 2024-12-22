@@ -1,0 +1,2 @@
+[google_vm]
+35.228.254.182 ansible_user=myuser ansible_ssh_private_key_file=~/.ssh/id_rsa ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ConnectTimeout=60'
