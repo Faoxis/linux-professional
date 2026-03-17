@@ -1,0 +1,34 @@
+---
+- name: Подготовка стенда - nginx на нестандартном порту
+  hosts: selinux
+  become: true
+
+  vars:
+    nginx_port: 4881
+
+  tasks:
+    - name: Install nginx and selinux tools
+      yum:
+        name:
+          - nginx
+          - policycoreutils-python-utils
+          - setools-console
+        state: present
+
+    - name: Change nginx port to {{ nginx_port }}
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s+listen\s+80'
+        line: "        listen       {{ nginx_port }};"
+
+    - name: Make sure SELinux is enforcing
+      selinux:
+        policy: targeted
+        state: enforcing
+
+    - name: Make sure nginx cannot start (SELinux should block it)
+      service:
+        name: nginx
+        state: started
+      register: nginx_result
+      failed_when: nginx_result is succeeded

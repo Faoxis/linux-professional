@@ -1,0 +1,33 @@
+---
+- name: "Способ 2: semanage port"
+  hosts: selinux
+  become: true
+
+  tasks:
+    - name: Make sure nginx cannot start
+      service:
+        name: nginx
+        state: started
+      register: nginx_try
+      failed_when: nginx_try is succeeded
+
+    - name: Add 4881 to http_port_t
+      command: semanage port -a -t http_port_t -p tcp 4881
+
+    - name: Start nginx
+      service:
+        name: nginx
+        state: started
+
+    - name: Check
+      uri:
+        url: http://localhost:4881
+        status_code: 200
+
+    - name: Stop nginx
+      service:
+        name: nginx
+        state: stopped
+
+    - name: Remove port
+      command: semanage port -d -t http_port_t -p tcp 4881
