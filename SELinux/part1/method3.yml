@@ -1,0 +1,40 @@
+---
+- name: "Способ 3: audit2allow модуль"
+  hosts: selinux
+  become: true
+
+  tasks:
+    - name: Try start nginx
+      service:
+        name: nginx
+        state: started
+      register: nginx_try
+      failed_when: nginx_try is succeeded
+
+    - name: Build module
+      shell: |
+        ausearch -c 'nginx' --raw | audit2allow -M my_nginx
+      args:
+        chdir: /tmp
+
+    - name: Install module
+      command: semodule -i /tmp/my_nginx.pp
+
+    - name: Now start nginx
+      service:
+        name: nginx
+        state: started
+
+    - name: Check
+      uri:
+        url: http://localhost:4881
+        status_code: 200
+
+    - name: Cleanup
+      service:
+        name: nginx
+        state: stopped
+
+    - name: Remove module
+      command: semodule -r my_nginx
+      ignore_errors: true

@@ -1,0 +1,39 @@
+---
+- name: "Способ 1: setsebool"
+  hosts: selinux
+  become: true
+
+  tasks:
+    - name: Make sure nginx cannot start
+      service:
+        name: nginx
+        state: started
+      register: nginx_try
+      failed_when: nginx_try is succeeded
+
+    - name: Enable nis_enabled
+      seboolean:
+        name: nis_enabled
+        state: true
+        persistent: true
+
+    - name: Start nginx
+      service:
+        name: nginx
+        state: started
+
+    - name: Verify
+      uri:
+        url: http://localhost:4881
+        status_code: 200
+
+    # откатываем для следующего способа
+    - name: Stop nginx and reset bool
+      service:
+        name: nginx
+        state: stopped
+
+    - seboolean:
+        name: nis_enabled
+        state: false
+        persistent: true
