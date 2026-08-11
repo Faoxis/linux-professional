@@ -1,0 +1,69 @@
+---
+- name: Настройка сетевой лаборатории
+  hosts: all
+  become: true
+
+  tasks:
+
+    # Ставим пакеты первым делом: на первом прогоне дефолт ещё висит на eth0
+    # и интернет есть, а дальше он уже пойдёт через inetRouter.
+    - name: Установить traceroute
+      apt:
+        name: traceroute
+        state: present
+        update_cache: yes
+
+    - name: Выключить firewall
+      systemd:
+        name: ufw
+        state: stopped
+        enabled: no
+      failed_when: false
+
+    - name: Включить форвардинг на роутерах
+      sysctl:
+        name: net.ipv4.conf.all.forwarding
+        value: '1'
+        state: present
+      when: "'routers' in group_names"
+
+    - name: Установить iptables-persistent на inetRouter
+      apt:
+        name: iptables-persistent
+        state: present
+      when: inventory_hostname == 'inetRouter'
+
+    - name: Положить правила NAT на inetRouter
+      template:
+        src: rules.v4
+        dest: /etc/iptables/rules.v4
+        mode: '0644'
+      when: inventory_hostname == 'inetRouter'
+      notify: Перечитать iptables
+
+    # У eth0 есть альтернативное имя enp0s3, и конфиг от cloud-init перехватывает
+    # интерфейс раньше нашего. Без этого dhcp4-overrides на eth0 не применяется.
+    - name: Убрать сетевой конфиг cloud-init
+      file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+
+    - name: Запретить cloud-init настраивать сеть
+      copy:
+        content: "network: {config: disabled}\n"
+        dest: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        mode: '0644'
+
+    - name: Положить маршруты и отключить дефолт на eth0
+      template:
+        src: 99-routes.yaml
+        dest: /etc/netplan/99-routes.yaml
+        mode: '0600'
+      notify: Применить netplan
+
+  handlers:
+    - name: Перечитать iptables
+      command: netfilter-persistent reload
+
+    - name: Применить netplan
+      command: netplan apply
