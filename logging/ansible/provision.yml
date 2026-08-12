@@ -1,0 +1,164 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Прописать хосты стенда в /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^{{ item.ip }}\\s"
+        line: "{{ item.ip }} {{ item.name }}"
+      loop:
+        - { ip: "{{ web_ip }}", name: web }
+        - { ip: "{{ log_ip }}", name: log }
+
+    # Логи с разных хостов складываются в один поток, и если часы разъедутся,
+    # события перемешаются по времени. Синхронизацию проверяем явно.
+    - name: Включить синхронизацию времени
+      systemd:
+        name: systemd-timesyncd
+        state: started
+        enabled: yes
+
+- name: Центральный сервер сбора логов
+  hosts: logserver
+  become: true
+
+  tasks:
+    - name: Установить rsyslog
+      apt:
+        name: rsyslog
+        state: present
+        update_cache: yes
+
+    - name: Создать каталог для принятых логов
+      file:
+        path: "{{ remote_log_dir }}"
+        state: directory
+        owner: syslog
+        group: adm
+        mode: '0755'
+
+    - name: Настроить приём логов
+      template:
+        src: rsyslog-server.conf.j2
+        dest: /etc/rsyslog.d/00-remote-server.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: 'rsyslogd -N1 -f %s'
+      notify: Перезапустить rsyslog
+
+    - name: Применить настройки сразу
+      meta: flush_handlers
+
+  handlers:
+    - name: Перезапустить rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+
+- name: Веб-сервер
+  hosts: webserver
+  become: true
+
+  tasks:
+    - name: Установить nginx и аудит
+      apt:
+        name:
+          - nginx
+          - auditd
+          # плагин, который перекладывает события аудита в syslog,
+          # иначе они остались бы только в /var/log/audit/audit.log
+          - audispd-plugins
+        state: present
+        update_cache: yes
+
+    # --- логи nginx ---
+
+    # Штатный access_log в nginx.conf убираем: по условию локально
+    # остаются только критичные логи, а весь access уходит на лог-сервер.
+    - name: Отключить локальный access_log
+      replace:
+        path: /etc/nginx/nginx.conf
+        regexp: '^(\s*)access_log\s+/var/log/nginx/access\.log;'
+        replace: '\1# access_log отключён ansible: весь access уходит на лог-сервер'
+      notify: Перезапустить nginx
+
+    # Строка на верхнем уровне nginx.conf отвечает за ошибки самого процесса,
+    # до появления контекста http. Её тоже прижимаем до критичных.
+    - name: Оставить локально только критичные ошибки
+      replace:
+        path: /etc/nginx/nginx.conf
+        regexp: '^(\s*)error_log\s+/var/log/nginx/error\.log;'
+        replace: '\1error_log /var/log/nginx/error.log crit;'
+      notify: Перезапустить nginx
+
+    - name: Настроить отправку логов nginx на лог-сервер
+      template:
+        src: nginx-remote-logging.conf.j2
+        dest: /etc/nginx/conf.d/remote-logging.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Перезапустить nginx
+
+    # Отдельный шаг, а не validate у template: сниппет из conf.d сам по себе
+    # не проверяется, его директивы валидны только внутри http, и nginx -t
+    # нужно давать конфигурацию целиком.
+    - name: Проверить конфигурацию nginx
+      command: nginx -t
+      changed_when: false
+
+    # --- аудит ---
+
+    - name: Положить правило аудита на конфиги nginx
+      copy:
+        src: audit-nginx.rules
+        dest: /etc/audit/rules.d/nginx.rules
+        owner: root
+        group: root
+        mode: '0640'
+      notify: Перечитать правила аудита
+
+    # auditd пишет в свой /var/log/audit/audit.log и мимо syslog.
+    # Плагин audisp-syslog дублирует события в syslog, откуда их
+    # уже забирает rsyslog и отправляет на лог-сервер.
+    - name: Включить отправку событий аудита в syslog
+      lineinfile:
+        path: /etc/audit/plugins.d/syslog.conf
+        regexp: '^active\s*='
+        line: 'active = yes'
+      notify: Перечитать конфигурацию auditd
+
+    # --- отправка на лог-сервер ---
+
+    - name: Настроить пересылку логов
+      template:
+        src: rsyslog-client.conf.j2
+        dest: /etc/rsyslog.d/90-remote-forward.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: 'rsyslogd -N1 -f %s'
+      notify: Перезапустить rsyslog
+
+  handlers:
+    - name: Перезапустить nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Перезапустить rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+
+    # systemctl restart auditd на Ubuntu запрещён (RefuseManualStop),
+    # правила перечитываются отдельной утилитой
+    - name: Перечитать правила аудита
+      command: augenrules --load
+
+    - name: Перечитать конфигурацию auditd
+      command: pkill -HUP auditd

@@ -1,0 +1,26 @@
+### Управляется ansible. Приём логов с других хостов.
+### Имя файла начинается с 00-, чтобы правила отработали раньше 50-default.conf.
+
+# nginx умеет отдавать логи только по UDP, поэтому нужны оба приёмника
+module(load="imudp")
+input(type="imudp" port="{{ syslog_port }}")
+
+module(load="imtcp")
+input(type="imtcp" port="{{ syslog_port }}")
+
+# Раскладываем принятое по каталогам: хост, внутри - файл на каждую программу.
+# Например access-логи nginx с хоста web попадут в
+# {{ remote_log_dir }}/web/nginx_access.log
+template(name="RemoteLogs" type="string"
+         string="{{ remote_log_dir }}/%HOSTNAME%/%PROGRAMNAME%.log")
+
+# Условие по адресу отправителя обязательно. В методичке стоит голое "*.*",
+# под которое попадают и собственные сообщения лог-сервера: они уехали бы
+# в {{ remote_log_dir }}/log/, а идущий следом "& ~" оборвал бы обработку,
+# и локальный /var/log/syslog на самом лог-сервере перестал бы наполняться.
+if $fromhost-ip != "127.0.0.1" then {
+    action(type="omfile" dynaFile="RemoteLogs"
+           fileCreateMode="0640" dirCreateMode="0755"
+           fileOwner="syslog" fileGroup="adm")
+    stop
+}

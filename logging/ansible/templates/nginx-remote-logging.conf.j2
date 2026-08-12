@@ -1,0 +1,11 @@
+### Управляется ansible. Подключается из nginx.conf через include conf.d/*.conf,
+### то есть все директивы ниже действуют в контексте http.
+
+# Локально оставляем только критичные ошибки.
+error_log  /var/log/nginx/error.log crit;
+
+# На лог-сервер уходит всё: и ошибки начиная с warn, и весь access.
+# Директивы error_log на одном уровне не заменяют друг друга, а складываются,
+# поэтому строка выше продолжает работать.
+error_log  syslog:server={{ log_ip }}:{{ syslog_port }},tag=nginx_error warn;
+access_log syslog:server={{ log_ip }}:{{ syslog_port }},tag=nginx_access,severity=info combined;
