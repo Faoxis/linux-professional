@@ -1,0 +1,14 @@
+---
+# defaults file for install_barman
+master_ip: '192.168.57.11'
+master_user: 'postgres'
+barman_ip: '192.168.57.13'
+barman_user: 'barman'
+barman_user_password: 'Otus2022!'
+
+pg_version: 14
+pg_conf_dir: '/etc/postgresql/14/main'
+pg_bin_dir: '/usr/lib/postgresql/14/bin'
+
+# Слот, который мастер держит под barman, пока тот не заберёт сегменты WAL
+barman_slot: 'node1'

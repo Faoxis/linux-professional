@@ -1,0 +1,16 @@
+---
+# Устанавливаем postgresql-server 14
+- name: install postgresql-server 14
+  apt:
+    name:
+      - postgresql
+      - postgresql-contrib
+    state: present
+    update_cache: true
+
+# Запускаем postgresql-14
+- name: enable and start service
+  service:
+    name: postgresql
+    state: started
+    enabled: true

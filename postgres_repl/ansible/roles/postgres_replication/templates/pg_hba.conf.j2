@@ -1,0 +1,30 @@
+### Управляется ansible, роль postgres_replication.
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# "local" is for Unix domain socket connections only
+local   all             all                                     peer
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            scram-sha-256
+# IPv6 local connections:
+host    all             all             ::1/128                 scram-sha-256
+# Allow replication connections from localhost, by a user with the
+# replication privilege.
+local   replication     all                                     peer
+host    replication     all             127.0.0.1/32            scram-sha-256
+host    replication     all             ::1/128                 scram-sha-256
+
+# Две последние строки разрешают репликацию пользователю {{ replicator_user }}.
+# Вторая нужна для обратного направления: после переключения ролей
+# мастером станет node2, а реплику придётся поднимать на node1.
+host    replication     {{ replicator_user }}     {{ master_ip }}/32        scram-sha-256
+host    replication     {{ replicator_user }}     {{ slave_ip }}/32         scram-sha-256
+
+# Доступ для сервера резервного копирования. Ему нужны оба типа подключения:
+# обычное для служебных запросов и репликационное - по нему идут
+# и базовая копия, и поток WAL.
+# В методичке эти строки дописывает роль install_barman через lineinfile.
+# Так делать нельзя: файл целиком раскладывается шаблоном из postgres_replication,
+# и на каждом прогоне плейбука роли затирали бы правки друг друга.
+host    all             {{ barman_user }}         {{ barman_ip }}/32        scram-sha-256
+host    replication     {{ barman_user }}         {{ barman_ip }}/32        scram-sha-256
