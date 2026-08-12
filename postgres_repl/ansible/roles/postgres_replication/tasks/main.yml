@@ -1,0 +1,117 @@
+---
+# Один шаблон postgresql.conf на оба хоста, отличается только listen_addresses
+- name: set listen address for current host
+  set_fact:
+    pg_listen_ip: "{{ master_ip if ansible_hostname == 'node1' else slave_ip }}"
+
+# Установка python-пакетов для модулей psql и для модуля expect
+- name: install base tools
+  apt:
+    name:
+      - python3-pexpect
+      - python3-psycopg2
+    state: present
+    update_cache: true
+
+# CREATE USER replicator WITH REPLICATION Encrypted PASSWORD 'Otus2022!';
+- name: Create replicator user
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ replicator_user }}"
+    password: "{{ replicator_password }}"
+    role_attr_flags: LOGIN,REPLICATION
+  when: (ansible_hostname == "node1")
+
+# Копируем конфигурационный файл postgresql.conf
+- name: copy postgresql.conf
+  template:
+    src: postgresql.conf.j2
+    dest: "{{ pg_conf_dir }}/postgresql.conf"
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  when: (ansible_hostname == "node1")
+
+# Копируем конфигурационный файл pg_hba.conf
+- name: copy pg_hba.conf
+  template:
+    src: pg_hba.conf.j2
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  when: (ansible_hostname == "node1")
+
+# Перезапускаем службу postgresql на node1: реплика должна найти мастер
+# уже с включённым wal_level = replica и разрешениями в pg_hba
+- name: restart postgresql-server on node1
+  service:
+    name: postgresql
+    state: restarted
+  when: (ansible_hostname == "node1")
+
+# Дальше идёт разовая инициализация реплики. Если standby.signal уже есть,
+# кластер на node2 - реплика, и переливать базу заново не нужно:
+# повторный pg_basebackup ещё и упал бы на попытке создать существующий слот.
+- name: check if node2 is already a standby
+  stat:
+    path: "{{ pg_data_dir }}/standby.signal"
+  register: standby_signal
+  when: (ansible_hostname == "node2")
+
+- name: stop postgresql-server on node2
+  service:
+    name: postgresql
+    state: stopped
+  when: (ansible_hostname == "node2") and
+        (not standby_signal.stat.exists)
+
+# Удаляем содержимое каталога данных: на его место ляжет копия мастера
+- name: Remove files from data catalog
+  file:
+    path: "{{ pg_data_dir }}"
+    state: absent
+  when: (ansible_hostname == "node2") and
+        (not standby_signal.stat.exists)
+
+# Копируем данные с node1 на node2.
+# -C -S создаёт на мастере слот {{ replication_slot }},
+# -R пишет в postgresql.auto.conf primary_conninfo и primary_slot_name
+# и создаёт standby.signal, из-за которого кластер стартует как реплика.
+- name: copy files from master to slave
+  become_user: postgres
+  expect:
+    command: >
+      {{ pg_bin_dir }}/pg_basebackup -h {{ master_ip }} -U {{ replicator_user }} -p 5432
+      -D {{ pg_data_dir }} -X stream -C -S {{ replication_slot }} -R -P
+    responses:
+      '.*Password.*': "{{ replicator_password }}"
+  when: (ansible_hostname == "node2") and
+        (not standby_signal.stat.exists)
+
+# Копируем конфигурационный файл postgresql.conf
+- name: copy postgresql.conf
+  template:
+    src: postgresql.conf.j2
+    dest: "{{ pg_conf_dir }}/postgresql.conf"
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  when: (ansible_hostname == "node2")
+
+# Копируем конфигурационный файл pg_hba.conf
+- name: copy pg_hba.conf
+  template:
+    src: pg_hba.conf.j2
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: '0640'
+  when: (ansible_hostname == "node2")
+
+# Запускаем службу postgresql на хосте node2
+- name: start postgresql-server on node2
+  service:
+    name: postgresql
+    state: started
+  when: (ansible_hostname == "node2")

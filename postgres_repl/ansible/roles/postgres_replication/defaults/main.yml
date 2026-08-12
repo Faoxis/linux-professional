@@ -1,0 +1,22 @@
+---
+# defaults file for postgres_replication
+replicator_user: 'replicator'
+replicator_password: 'Otus2022!'
+
+master_ip: '192.168.57.11'
+slave_ip: '192.168.57.12'
+
+# Нужны шаблону pg_hba.conf: доступ для сервера резервного копирования
+# описан там же, где и остальные правила
+barman_ip: '192.168.57.13'
+barman_user: 'barman'
+
+pg_version: 14
+pg_conf_dir: '/etc/postgresql/14/main'
+pg_data_dir: '/var/lib/postgresql/14/main'
+pg_bin_dir: '/usr/lib/postgresql/14/bin'
+
+# Слот, который мастер держит под реплику node2.
+# В методичке репликация называется "с использованием слотов", но слот
+# нигде не создаётся: pg_basebackup вызывается без -C/-S. Заводим его здесь.
+replication_slot: 'node2_slot'

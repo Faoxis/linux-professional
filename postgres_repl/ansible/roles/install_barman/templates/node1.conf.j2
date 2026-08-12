@@ -1,0 +1,29 @@
+### Управляется ansible, роль install_barman.
+
+[node1]
+# Описание задания
+description = "backup node1"
+# Команда подключения к хосту node1. Нужна не для бекапа (он идёт потоком через
+# репликационное подключение), а для barman recover: копию обратно на мастер
+# barman кладёт по ssh под пользователем {{ master_user }}
+ssh_command = ssh -o StrictHostKeyChecking=accept-new {{ master_user }}@{{ master_ip }}
+# Команда для подключения к postgres-серверу
+conninfo = host={{ master_ip }} user={{ barman_user }} port=5432 dbname=postgres
+# Команда для потоковой передачи от postgres-сервера
+streaming_conninfo = host={{ master_ip }} user={{ barman_user }}
+retention_policy_mode = auto
+retention_policy = RECOVERY WINDOW OF 7 days
+wal_retention_policy = main
+# WAL забираем потоком через pg_receivewal, а не через archive_command:
+# сегмент уезжает на barman по мере заполнения, а не после закрытия
+streaming_archiver = on
+archiver = off
+# Указание префикса, который будет использоваться как $PATH на хосте node1.
+# В методичке указан путь /usr/pgsql-14/bin от сборки для RHEL, на Ubuntu его нет.
+path_prefix = {{ pg_bin_dir }}
+# Настройки слота. Без слота мастер может переиспользовать сегмент раньше,
+# чем barman его заберёт, и в архиве образуется дыра.
+create_slot = auto
+slot_name = {{ barman_slot }}
+# Тип выполняемого бекапа
+backup_method = postgres

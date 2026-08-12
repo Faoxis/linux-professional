@@ -1,0 +1,184 @@
+---
+# Установка необходимых пакетов для работы с postgres и пользователями
+- name: install base tools
+  apt:
+    name:
+      - python3-pexpect
+      - python3-psycopg2
+      - bash-completion
+      - wget
+    state: present
+    update_cache: true
+
+# Установка пакетов barman и postgresql-client на сервер barman.
+# Клиент нужен той же версии, что и сервер: barman вызывает
+# pg_basebackup и pg_receivewal именно из него.
+- name: install barman and postgresql packages on barman
+  apt:
+    name:
+      - barman
+      - barman-cli
+      - "postgresql-client-{{ pg_version }}"
+    state: present
+    update_cache: true
+  when: (ansible_hostname == "barman")
+
+# Установка пакета barman-cli на серверах node1 и node2
+- name: install barman-cli on nodes
+  apt:
+    name:
+      - barman-cli
+    state: present
+    update_cache: true
+  when: (ansible_hostname != "barman")
+
+# Генерируем SSH-ключ для пользователя postgres на хосте node1
+- name: generate SSH key for postgres
+  user:
+    name: postgres
+    generate_ssh_key: yes
+    ssh_key_type: rsa
+    ssh_key_bits: 4096
+    force: no
+  when: (ansible_hostname == "node1")
+
+# Генерируем SSH-ключ для пользователя barman на хосте barman
+- name: generate SSH key for barman
+  user:
+    name: barman
+    shell: /bin/bash
+    generate_ssh_key: yes
+    ssh_key_type: rsa
+    ssh_key_bits: 4096
+    force: no
+  when: (ansible_hostname == "barman")
+
+# Забираем содержимое открытого ключа postgres c хоста node1
+- name: fetch public ssh key from node1
+  slurp:
+    src: /var/lib/postgresql/.ssh/id_rsa.pub
+  register: node1_ssh_key
+  when: (ansible_hostname == "node1")
+
+# Копируем ключ с node1 на barman
+- name: transfer node1 public key to barman
+  delegate_to: barman
+  authorized_key:
+    key: "{{ node1_ssh_key.content | b64decode }}"
+    comment: "{{ ansible_hostname }}"
+    user: barman
+  when: (ansible_hostname == "node1")
+
+# Забираем содержимое открытого ключа barman c хоста barman
+- name: fetch public ssh key from barman
+  slurp:
+    src: /var/lib/barman/.ssh/id_rsa.pub
+  register: barman_ssh_key
+  when: (ansible_hostname == "barman")
+
+# Копируем ключ с barman на node1
+- name: transfer barman public key to node1
+  delegate_to: node1
+  authorized_key:
+    key: "{{ barman_ssh_key.content | b64decode }}"
+    comment: "{{ ansible_hostname }}"
+    user: postgres
+  when: (ansible_hostname == "barman")
+
+# barman recover ходит на мастер по ssh. Если ключ хоста неизвестен, первое
+# подключение уходит в интерактивный вопрос и barman падает с
+# "Unable to connect to the target host": ssh_command из node1.conf при этом
+# не помогает, recover запускается с собственным --remote-ssh-command.
+- name: get node1 host key
+  command: ssh-keyscan -t ed25519 {{ master_ip }}
+  register: node1_host_key
+  changed_when: false
+  when: (ansible_hostname == "barman")
+
+- name: add node1 host key to barman known_hosts
+  become_user: barman
+  known_hosts:
+    name: "{{ master_ip }}"
+    key: "{{ node1_host_key.stdout }}"
+    path: /var/lib/barman/.ssh/known_hosts
+    state: present
+  when: (ansible_hostname == "barman")
+
+# CREATE USER barman WITH REPLICATION Encrypted PASSWORD 'Otus2022!';
+- name: Create barman user
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ barman_user }}"
+    password: "{{ barman_user_password }}"
+    role_attr_flags: SUPERUSER
+  when: (ansible_hostname == "node1")
+
+# Разрешения в pg_hba.conf для пользователя barman лежат в шаблоне роли
+# postgres_replication и приезжают на хосты вместе с остальным файлом,
+# отдельного шага и перезапуска сервера здесь не нужно.
+
+# Создаём БД otus
+- name: Create DB for backup
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: otus
+    encoding: UTF-8
+    template: template0
+    state: present
+  when: (ansible_hostname == "node1")
+
+# Создаём таблицу test в БД otus
+- name: Add table to otus
+  become_user: postgres
+  community.postgresql.postgresql_table:
+    db: otus
+    name: test
+    columns:
+      - id int
+      - name varchar(30)
+    state: present
+  when: (ansible_hostname == "node1")
+
+# Копируем файл .pgpass
+- name: copy .pgpass
+  template:
+    src: pgpass.j2
+    dest: /var/lib/barman/.pgpass
+    owner: barman
+    group: barman
+    mode: '0600'
+  when: (ansible_hostname == "barman")
+
+# Копируем файл barman.conf
+- name: copy barman.conf
+  template:
+    src: barman.conf.j2
+    dest: /etc/barman.conf
+    owner: barman
+    group: barman
+    mode: '0644'
+  when: (ansible_hostname == "barman")
+
+# Копируем файл node1.conf
+- name: copy node1.conf
+  template:
+    src: node1.conf.j2
+    dest: /etc/barman.d/node1.conf
+    owner: barman
+    group: barman
+    mode: '0644'
+  when: (ansible_hostname == "barman")
+
+# barman cron создаёт слот на мастере и поднимает фоновый receive-wal.
+# Дальше его раз в минуту дёргает /etc/cron.d/barman из пакета.
+- name: barman cron
+  become_user: barman
+  command: barman cron
+  changed_when: false
+  when: (ansible_hostname == "barman")
+
+- name: barman switch-wal node1
+  become_user: barman
+  command: barman switch-wal --force node1
+  changed_when: false
+  when: (ansible_hostname == "barman")
