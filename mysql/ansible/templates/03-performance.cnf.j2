@@ -1,0 +1,19 @@
+### Управляется ansible. Соответствует 03-performance.cnf из стенда методички.
+
+[mysqld]
+skip-external-locking
+key-buffer-size         = 384M
+max-allowed-packet      = 16M
+table-open-cache        = 5000
+sort-buffer-size        = 64M
+join-buffer-size        = 64M
+read-buffer-size        = 2M
+read-rnd-buffer-size    = 8M
+myisam-sort-buffer-size = 64M
+thread-cache-size       = 8
+tmp-table-size          = 1024M
+max-heap-table-size     = 1024M
+
+# query-cache-limit и query-cache-size из стенда убраны: кеш запросов
+# выкинут из MySQL 8.0 целиком, с этими строками сервер не поднимется.
+# thread-concurrency в стенде уже закомментирован, там та же история.

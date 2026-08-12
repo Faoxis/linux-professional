@@ -1,0 +1,20 @@
+### Управляется ansible. Соответствует 01-base.cnf из стенда методички.
+
+[mysqld]
+# Пути в Ubuntu отличаются от Percona на RHEL: сокет и pid-файл в /var/run/mysqld,
+# лог ошибок в /var/log/mysql
+pid-file  = /var/run/mysqld/mysqld.pid
+socket    = {{ mysql_socket }}
+datadir   = /var/lib/mysql
+log-error = /var/log/mysql/error.log
+
+# По умолчанию mysqld слушает только localhost, реплика бы не подключилась
+bind-address = {{ mysql_bind_ip }}
+
+# server-id обязан отличаться у мастера и реплики
+server-id = {{ mysql_server_id }}
+
+innodb_file_per_table = 1
+skip-name-resolve
+
+# symbolic-links из стенда убран: параметр удалён в MySQL 8.0, с ним mysqld не стартует

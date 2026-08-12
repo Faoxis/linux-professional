@@ -1,0 +1,48 @@
+# Описание параметров ВМ
+MACHINES = {
+  :master => {
+    :box_name => "bento/ubuntu-22.04",
+    :ip_addr  => "192.168.11.150",
+    :memory   => 2048,
+    :cpus     => 2,
+  },
+  :slave => {
+    :box_name => "bento/ubuntu-22.04",
+    :ip_addr  => "192.168.11.151",
+    :memory   => 2048,
+    :cpus     => 2,
+  },
+}
+
+Vagrant.configure("2") do |config|
+
+  MACHINES.each do |boxname, boxconfig|
+
+    config.vm.define boxname do |box|
+
+      box.vm.box = boxconfig[:box_name]
+      box.vm.host_name = boxname.to_s
+      box.vm.network "private_network", ip: boxconfig[:ip_addr]
+
+      box.vm.provider :virtualbox do |vb|
+        vb.memory = boxconfig[:memory]
+        vb.cpus = boxconfig[:cpus]
+      end
+
+      # Плейбук запускается один раз, на последней машине и сразу на обе:
+      # реплика снимает дамп с мастера и подключается к нему,
+      # поэтому мастер должен быть готов раньше. Порядок плеев это обеспечивает.
+      if boxname == :slave
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = {
+            "master" => ["master"],
+            "slave"  => ["slave"],
+          }
+        end
+      end
+    end
+  end
+end

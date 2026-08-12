@@ -1,0 +1,28 @@
+### Управляется ansible. Соответствует 05-binlog.cnf из стенда методички.
+
+[mysqld]
+log-bin         = mysql-bin
+max-binlog-size = 16M
+binlog-format   = MIXED
+
+# В стенде стоит expire-logs-days = 7. В MySQL 8.0 параметр объявлен устаревшим,
+# на смену пришёл счётчик в секундах, 604800 - те же семь суток.
+binlog_expire_logs_seconds = 604800
+
+# --- GTID ---
+# Транзакции нумеруются глобально, поэтому реплике не нужно знать
+# имя binlog-файла и смещение: хватает MASTER_AUTO_POSITION = 1
+gtid-mode                = ON
+enforce-gtid-consistency = ON
+# Реплика пишет применённые транзакции в свой binlog. Нужно, чтобы её саму
+# можно было сделать мастером и чтобы GTID-история не рвалась.
+log_replica_updates      = ON
+
+{% if replicate_ignore is defined and replicate_ignore %}
+# --- Только для реплики: исключаем объекты из репликации ---
+# Фильтр слейв-сайд: мастер пишет в binlog всё, а реплика пропускает
+# любые операции, затрагивающие перечисленные объекты.
+{% for obj in replicate_ignore %}
+replicate-ignore-table = {{ obj }}
+{% endfor %}
+{% endif %}

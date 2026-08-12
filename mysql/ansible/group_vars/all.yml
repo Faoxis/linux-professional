@@ -1,0 +1,23 @@
+---
+master_ip: 192.168.11.150
+slave_ip: 192.168.11.151
+
+# В Ubuntu сокет и каталог конфигов лежат не там, где у Percona на RHEL
+mysql_socket: /var/run/mysqld/mysqld.sock
+mysql_conf_dir: /etc/mysql/mysql.conf.d
+
+# Пользователь для репликации, реквизиты из методички
+repl_user: repl
+repl_password: '!OtusLinux2018'
+
+bet_db: bet
+
+# Объекты, которые реплицироваться не должны. По заданию на реплике
+# нужны только bookmaker, competition, market, odds, outcome,
+# а в дампе есть ещё таблица events_on_demand и представление v_same_event.
+excluded_objects:
+  - "{{ bet_db }}.events_on_demand"
+  - "{{ bet_db }}.v_same_event"
+
+# Дамп мастера, которым засеивается реплика
+master_dump: /tmp/master.sql
