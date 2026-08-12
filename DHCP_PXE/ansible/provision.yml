@@ -1,0 +1,105 @@
+---
+- name: Настройка PXE-сервера
+  hosts: pxeserver
+  become: true
+
+  vars:
+    tftp_root: /srv/tftp
+    images_dir: /srv/images
+    ks_dir: /srv/ks
+    netboot_url: https://releases.ubuntu.com/noble/ubuntu-24.04.4-netboot-amd64.tar.gz
+    iso_url: https://releases.ubuntu.com/noble/ubuntu-24.04.4-live-server-amd64.iso
+
+  tasks:
+
+    - name: Выключить firewall
+      systemd:
+        name: ufw
+        state: stopped
+        enabled: no
+      # Иначе ufw режет DHCP и TFTP на внутренней сети.
+
+    - name: Установить dnsmasq и apache2
+      apt:
+        name:
+          - dnsmasq
+          - apache2
+        state: present
+        update_cache: yes
+      # dnsmasq тут сразу и DHCP, и TFTP.
+
+    - name: Создать каталог для TFTP
+      file:
+        path: "{{ tftp_root }}"
+        state: directory
+
+    - name: Скачать и распаковать netboot-архив
+      unarchive:
+        src: "{{ netboot_url }}"
+        dest: "{{ tftp_root }}"
+        remote_src: yes
+        creates: "{{ tftp_root }}/amd64/pxelinux.0"
+      # Отсюда клиент возьмёт pxelinux.0, ядро и initrd.
+
+    - name: Создать каталог для образов
+      file:
+        path: "{{ images_dir }}"
+        state: directory
+
+    - name: Скачать образ Ubuntu 24.04
+      get_url:
+        url: "{{ iso_url }}"
+        dest: "{{ images_dir }}/noble-live-server-amd64.iso"
+      # Самый долгий шаг, образ на 3.2 ГБ.
+
+    - name: Создать каталог для файлов автоустановки
+      file:
+        path: "{{ ks_dir }}"
+        state: directory
+
+    - name: Положить user-data
+      copy:
+        src: files/user-data
+        dest: "{{ ks_dir }}/user-data"
+
+    - name: Создать пустой meta-data
+      copy:
+        content: ''
+        dest: "{{ ks_dir }}/meta-data"
+        force: no
+      # Пустой, но без него cloud-init не считает источник валидным.
+
+    - name: Настроить dnsmasq
+      copy:
+        src: files/pxe.conf
+        dest: /etc/dnsmasq.d/pxe.conf
+      notify: Перезапустить dnsmasq
+
+    - name: Положить pxelinux.cfg/default
+      copy:
+        src: files/pxelinux-default
+        dest: "{{ tftp_root }}/amd64/pxelinux.cfg/default"
+
+    - name: Настроить vhost apache
+      copy:
+        src: files/ks-server.conf
+        dest: /etc/apache2/sites-available/ks-server.conf
+      notify: Перезапустить apache2
+
+    - name: Включить vhost
+      file:
+        src: /etc/apache2/sites-available/ks-server.conf
+        dest: /etc/apache2/sites-enabled/ks-server.conf
+        state: link
+      notify: Перезапустить apache2
+
+  handlers:
+    - name: Перезапустить dnsmasq
+      systemd:
+        name: dnsmasq
+        state: restarted
+
+    - name: Перезапустить apache2
+      systemd:
+        name: apache2
+        state: restarted
