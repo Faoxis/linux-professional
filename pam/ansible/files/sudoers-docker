@@ -1,0 +1,17 @@
+# Управляется ansible. Право перезапускать docker и смотреть его состояние.
+# Разрешена не команда systemctl целиком, а только перечисленные строки:
+# sudo разбирает аргументы, поэтому "systemctl restart nginx" сюда не подойдёт.
+#
+# Обе ветки путей указаны намеренно: sudo сравнивает тот путь, который сам
+# нашёл в PATH, а /bin в Ubuntu - симлинк на /usr/bin.
+
+otusadm ALL=(root) NOPASSWD: /usr/bin/systemctl restart docker, \
+                             /usr/bin/systemctl restart docker.service, \
+                             /usr/bin/systemctl start docker, \
+                             /usr/bin/systemctl stop docker, \
+                             /usr/bin/systemctl status docker, \
+                             /bin/systemctl restart docker, \
+                             /bin/systemctl restart docker.service, \
+                             /bin/systemctl start docker, \
+                             /bin/systemctl stop docker, \
+                             /bin/systemctl status docker
