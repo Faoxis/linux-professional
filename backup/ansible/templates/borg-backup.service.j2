@@ -1,0 +1,18 @@
+### Управляется ansible.
+
+[Unit]
+Description=Резервная копия {{ backup_target }} на {{ backup_ip }} через borg
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Парольная фраза и адрес репозитория лежат в отдельном файле с правами 0600.
+# В методичке они заданы через Environment= прямо в юните, но юнит читается
+# любым пользователем через systemctl show, и парольная фраза оттуда видна.
+EnvironmentFile={{ borg_env_file }}
+
+# Весь вывод скрипта уходит в syslog с тегом {{ log_tag }}.
+# bash -o pipefail нужен, чтобы код возврата брался от скрипта, а не от logger.
+ExecStart=/bin/bash -o pipefail -c '{{ borg_script }} 2>&1 | logger -t {{ log_tag }}'

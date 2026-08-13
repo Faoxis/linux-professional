@@ -1,0 +1,171 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Прописать хосты стенда в /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^{{ item.ip }}\\s"
+        line: "{{ item.ip }} {{ item.name }}"
+      loop:
+        - { ip: "{{ backup_ip }}", name: backup-server }
+        - { ip: "{{ client_ip }}", name: client }
+
+    - name: Установить borgbackup
+      apt:
+        name: borgbackup
+        state: present
+        update_cache: yes
+
+- name: Сервер резервных копий
+  hosts: backup
+  become: true
+
+  tasks:
+    # --- отдельная точка монтирования под /var/backup ---
+
+    - name: Проверить, что диск на месте
+      stat:
+        path: "{{ backup_device }}"
+      register: disk
+
+    - name: Остановиться, если диска нет
+      fail:
+        msg: "Не найден {{ backup_device }}. Диск подключается из Vagrantfile."
+      when: not disk.stat.exists
+
+    # Размечать диск не нужно: файловая система кладётся на устройство целиком.
+    # Модуль сам ничего не делает, если ext4 там уже есть.
+    - name: Создать файловую систему
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ backup_device }}"
+
+    - name: Получить UUID файловой системы
+      command: "blkid -s UUID -o value {{ backup_device }}"
+      register: fs_uuid
+      changed_when: false
+
+    # Монтируем по UUID, а не по /dev/sdb: имя устройства зависит от порядка
+    # опроса контроллеров и после перезагрузки может смениться.
+    - name: Смонтировать {{ backup_mount }} и прописать в fstab
+      ansible.posix.mount:
+        path: "{{ backup_mount }}"
+        src: "UUID={{ fs_uuid.stdout }}"
+        fstype: ext4
+        opts: defaults
+        state: mounted
+
+    # --- пользователь borg ---
+
+    - name: Создать пользователя {{ borg_user }}
+      user:
+        name: "{{ borg_user }}"
+        shell: /bin/bash
+        home: "/home/{{ borg_user }}"
+        create_home: yes
+
+    - name: Отдать точку монтирования пользователю {{ borg_user }}
+      file:
+        path: "{{ backup_mount }}"
+        owner: "{{ borg_user }}"
+        group: "{{ borg_user }}"
+        mode: '0700'
+
+- name: Клиент
+  hosts: client
+  become: true
+
+  tasks:
+    - name: Сгенерировать ssh-ключ пользователю root
+      user:
+        name: root
+        generate_ssh_key: yes
+        ssh_key_type: ed25519
+        ssh_key_file: .ssh/id_ed25519
+        force: no
+
+    - name: Прочитать публичный ключ
+      slurp:
+        src: /root/.ssh/id_ed25519.pub
+      register: client_key
+
+    # Ключ пускает только в borg serve и только в каталог резервных копий:
+    # даже с этим ключом на сервере нельзя ни получить шелл, ни выйти
+    # за пределы {{ backup_mount }}.
+    - name: Разрешить клиенту писать в репозиторий
+      delegate_to: "{{ groups['backup'][0] }}"
+      authorized_key:
+        user: "{{ borg_user }}"
+        key: "{{ client_key.content | b64decode }}"
+        key_options: 'command="borg serve --restrict-to-path {{ backup_mount }}",restrict'
+
+    - name: Создать каталог для файла окружения
+      file:
+        path: "{{ borg_env_file | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Положить файл окружения с реквизитами
+      template:
+        src: borg.env.j2
+        dest: "{{ borg_env_file }}"
+        owner: root
+        group: root
+        mode: '0600'
+
+    # Реквизиты передаются задаче напрямую, а не через source файла окружения:
+    # он предназначен для systemd, и разбирать его шеллом незачем.
+    - name: Проверить, инициализирован ли репозиторий
+      command: "borg info {{ borg_repo }}"
+      environment: &borg_env
+        BORG_PASSPHRASE: "{{ borg_passphrase }}"
+        BORG_RSH: "{{ borg_rsh }}"
+      register: repo_check
+      failed_when: false
+      changed_when: false
+
+    # repokey: ключ шифрования лежит в самом репозитории и открывается
+    # парольной фразой. Для удалённого репозитория это рекомендованный вариант.
+    - name: Инициализировать репозиторий
+      command: "borg init --encryption=repokey {{ borg_repo }}"
+      environment: *borg_env
+      when: repo_check.rc != 0
+
+    - name: Положить скрипт снятия копий
+      copy:
+        src: borg-backup.sh
+        dest: "{{ borg_script }}"
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Положить юнит и таймер
+      template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - borg-backup.service
+        - borg-backup.timer
+      notify: Перечитать systemd
+
+    - name: Применить юниты сразу
+      meta: flush_handlers
+
+    - name: Включить и запустить таймер
+      systemd:
+        name: borg-backup.timer
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Перечитать systemd
+      systemd:
+        daemon_reload: yes

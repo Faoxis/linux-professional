@@ -1,0 +1,15 @@
+### Управляется ansible.
+
+[Unit]
+Description=Запуск резервного копирования каждые {{ backup_interval }}
+
+[Timer]
+# Первый запуск через две минуты после загрузки, дальше каждые {{ backup_interval }}
+# от момента последнего запуска
+OnBootSec=2min
+OnUnitActiveSec={{ backup_interval }}
+AccuracySec=1s
+Unit=borg-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,69 @@
+# Отдельный диск под /var/backup. Лежит рядом со стендом, чтобы
+# vagrant destroy его не трогал, а пересоздание стенда не тянуло за собой
+# переформатирование - файл создаётся только если его ещё нет.
+BACKUP_DISK = File.expand_path("../.vagrant/backup_disk.vdi", __FILE__)
+
+MACHINES = {
+  :backup_server => {
+    :box_name => "bento/ubuntu-22.04",
+    # systemd не принимает подчёркивание в имени хоста, поэтому имя машины
+    # в vagrant и имя хоста в системе отличаются
+    :hostname => "backup-server",
+    :ip_addr  => "192.168.11.160",
+    :memory   => 1024,
+    :cpus     => 1,
+    :extra_disk => true,
+  },
+  :client => {
+    :box_name => "bento/ubuntu-22.04",
+    :hostname => "client",
+    :ip_addr  => "192.168.11.150",
+    :memory   => 1024,
+    :cpus     => 1,
+    :extra_disk => false,
+  },
+}
+
+Vagrant.configure("2") do |config|
+
+  MACHINES.each do |boxname, boxconfig|
+
+    config.vm.define boxname do |box|
+
+      box.vm.box = boxconfig[:box_name]
+      box.vm.host_name = boxconfig[:hostname]
+      box.vm.network "private_network", ip: boxconfig[:ip_addr]
+
+      box.vm.provider :virtualbox do |vb|
+        vb.memory = boxconfig[:memory]
+        vb.cpus = boxconfig[:cpus]
+
+        if boxconfig[:extra_disk]
+          unless File.exist?(BACKUP_DISK)
+            vb.customize ["createhd", "--filename", BACKUP_DISK,
+                          "--format", "VDI", "--size", 2048]
+          end
+          vb.customize ["storageattach", :id,
+                        "--storagectl", "SATA Controller",
+                        "--port", 1, "--device", 0,
+                        "--type", "hdd", "--medium", BACKUP_DISK]
+        end
+      end
+
+      # Плейбук запускается один раз, на последней машине и сразу на обе:
+      # клиент раскладывает свой ключ на сервер и инициализирует там репозиторий,
+      # поэтому сервер должен быть готов раньше. Порядок плеев это обеспечивает.
+      if boxname == :client
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = {
+            "backup" => ["backup_server"],
+            "client" => ["client"],
+          }
+        end
+      end
+    end
+  end
+end

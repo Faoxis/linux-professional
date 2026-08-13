@@ -1,0 +1,36 @@
+---
+backup_ip: 192.168.11.160
+client_ip: 192.168.11.150
+
+# --- сервер резервных копий ---
+borg_user: borg
+# Точка монтирования отдельного диска
+backup_mount: /var/backup
+backup_device: /dev/sdb
+# Репозиторий лежит подкаталогом, а не в самой точке монтирования:
+# на свежей ext4 есть lost+found, а borg init требует пустой каталог
+repo_name: client
+borg_repo: "ssh://{{ borg_user }}@{{ backup_ip }}{{ backup_mount }}/{{ repo_name }}"
+
+# --- клиент ---
+backup_target: /etc
+borg_env_file: /etc/borg/borg.env
+borg_script: /usr/local/bin/borg-backup.sh
+log_tag: borg-backup
+
+# Парольная фраза репозитория. Лежит только в root-only файле окружения,
+# в юните systemd её нет: он читается кем угодно через systemctl show.
+borg_passphrase: 'Otus1234'
+
+# Чем borg ходит на сервер. Ключ хоста принимается при первом подключении:
+# стенд одноразовый, а без этого borg молча упирается в вопрос ssh и виснет.
+borg_rsh: 'ssh -i /root/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new'
+
+# --- политика хранения ---
+# Глубина год: 12 месячных срезов. Последние три месяца - посуточно,
+# 90 дней это как раз они.
+keep_daily: 90
+keep_monthly: 12
+
+# Как часто снимать копию
+backup_interval: 5min
