@@ -1,0 +1,190 @@
+---
+- name: Установка и общая настройка MySQL
+  hosts: all
+  become: true
+
+  vars:
+    mysql_bind_ip: "{{ master_ip if inventory_hostname == 'master' else slave_ip }}"
+    mysql_server_id: "{{ 1 if inventory_hostname == 'master' else 2 }}"
+    # Фильтр репликации нужен только на реплике
+    replicate_ignore: "{{ excluded_objects if inventory_hostname == 'slave' else [] }}"
+
+  tasks:
+    - name: Прописать хосты стенда в /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^{{ item.ip }}\\s"
+        line: "{{ item.ip }} {{ item.name }}"
+      loop:
+        - { ip: "{{ master_ip }}", name: master }
+        - { ip: "{{ slave_ip }}", name: slave }
+
+    - name: Установить MySQL
+      apt:
+        name:
+          - mysql-server
+          # нужен модулям ansible, которые ходят в базу
+          - python3-pymysql
+        state: present
+        update_cache: yes
+
+    # Дистрибутивный mysqld.cnf лежит в том же каталоге, что и наши файлы,
+    # и читается ПОСЛЕ них: имена 01-05 сортируются раньше, чем mysqld.
+    # При повторе одного параметра побеждает прочитанный последним, поэтому
+    # его bind-address = 127.0.0.1 перебивал наш, мастер слушал только localhost
+    # и реплика не могла подключиться. mysqlx-bind-address не трогаем,
+    # X-протокол нам не нужен и пусть остаётся на localhost.
+    - name: Убрать bind-address из дистрибутивного конфига
+      replace:
+        path: "{{ mysql_conf_dir }}/mysqld.cnf"
+        regexp: '^(\s*)bind-address(\s*=.*)$'
+        replace: '\1# bind-address\2   # отключено ansible, адрес задаётся в 01-base.cnf'
+      notify: Перезапустить mysql
+
+    # Конфиги разложены теми же пятью файлами, что и в стенде методички.
+    # На Ubuntu каталог называется mysql.conf.d, а не my.cnf.d.
+    - name: Положить конфигурацию MySQL
+      template:
+        src: "{{ item }}.j2"
+        dest: "{{ mysql_conf_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - 01-base.cnf
+        - 02-max-connections.cnf
+        - 03-performance.cnf
+        - 04-slow-query.cnf
+        - 05-binlog.cnf
+      notify: Перезапустить mysql
+
+    - name: Применить конфигурацию сразу
+      meta: flush_handlers
+
+    - name: Дождаться готовности MySQL
+      wait_for:
+        path: "{{ mysql_socket }}"
+        state: present
+        timeout: 60
+
+  handlers:
+    - name: Перезапустить mysql
+      systemd:
+        name: mysql
+        state: restarted
+
+- name: Настройка мастера
+  hosts: master
+  become: true
+
+  tasks:
+    - name: Скопировать дамп bet.dmp на мастер
+      copy:
+        src: bet.dmp
+        dest: /tmp/bet.dmp
+        mode: '0644'
+
+    - name: Создать базу {{ bet_db }}
+      community.mysql.mysql_db:
+        name: "{{ bet_db }}"
+        state: present
+        login_unix_socket: "{{ mysql_socket }}"
+
+    - name: Проверить, залит ли уже дамп
+      community.mysql.mysql_query:
+        query: >
+          SELECT COUNT(*) AS cnt FROM information_schema.tables
+          WHERE table_schema = '{{ bet_db }}'
+        login_unix_socket: "{{ mysql_socket }}"
+      register: bet_objects
+      changed_when: false
+
+    - name: Залить дамп bet.dmp
+      community.mysql.mysql_db:
+        name: "{{ bet_db }}"
+        state: import
+        target: /tmp/bet.dmp
+        login_unix_socket: "{{ mysql_socket }}"
+      when: bet_objects.query_result[0][0].cnt | int == 0
+
+    - name: Создать пользователя для репликации
+      community.mysql.mysql_user:
+        name: "{{ repl_user }}"
+        host: '%'
+        password: "{{ repl_password }}"
+        priv: '*.*:REPLICATION SLAVE'
+        state: present
+        login_unix_socket: "{{ mysql_socket }}"
+
+    # Дамп для засева реплики: без двух объектов, которые реплицировать не нужно.
+    # --set-gtid-purged=ON кладёт в файл GTID-историю мастера, по ней реплика
+    # поймёт, с какой транзакции продолжать.
+    - name: Снять дамп мастера для реплики
+      shell: |
+        mysqldump --single-transaction --triggers --routines --events \
+          --set-gtid-purged=ON \
+          --databases {{ bet_db }} \
+          {% for obj in excluded_objects %}--ignore-table={{ obj }} {% endfor %} \
+          > {{ master_dump }}
+      args:
+        creates: "{{ master_dump }}"
+
+    - name: Забрать дамп на управляющую машину
+      fetch:
+        src: "{{ master_dump }}"
+        dest: /tmp/mysql-hw/master.sql
+        flat: yes
+
+- name: Настройка реплики
+  hosts: slave
+  become: true
+
+  tasks:
+    - name: Проверить, настроена ли уже репликация
+      community.mysql.mysql_replication:
+        mode: getreplica
+        login_unix_socket: "{{ mysql_socket }}"
+      register: replica_state
+
+    - name: Положить дамп мастера на реплику
+      copy:
+        src: /tmp/mysql-hw/master.sql
+        dest: "{{ master_dump }}"
+        mode: '0644'
+      when: not replica_state.Is_Replica
+
+    # GTID-историю реплики надо обнулить: SET @@GLOBAL.GTID_PURGED из дампа
+    # выполняется только при пустом gtid_executed.
+    - name: Очистить GTID-историю реплики
+      community.mysql.mysql_query:
+        query: RESET MASTER
+        login_unix_socket: "{{ mysql_socket }}"
+      when: not replica_state.Is_Replica
+
+    # sql_log_bin=0 на время заливки: иначе реплика запишет заливку в свой binlog
+    # и заведёт собственные GTID поверх истории мастера.
+    - name: Залить дамп мастера
+      shell: |
+        ( echo "SET sql_log_bin = 0;"; cat {{ master_dump }} ) | mysql
+      when: not replica_state.Is_Replica
+
+    - name: Подключить реплику к мастеру
+      community.mysql.mysql_replication:
+        mode: changeprimary
+        primary_host: "{{ master_ip }}"
+        primary_port: 3306
+        primary_user: "{{ repl_user }}"
+        primary_password: "{{ repl_password }}"
+        primary_auto_position: yes
+        login_unix_socket: "{{ mysql_socket }}"
+      when: not replica_state.Is_Replica
+
+    # Без условия модуль рапортует об изменении на каждом прогоне,
+    # даже когда репликация уже идёт
+    - name: Запустить репликацию
+      community.mysql.mysql_replication:
+        mode: startreplica
+        login_unix_socket: "{{ mysql_socket }}"
+      when: not replica_state.Is_Replica
+            or replica_state.get('Replica_IO_Running', 'No') != 'Yes'
+            or replica_state.get('Replica_SQL_Running', 'No') != 'Yes'
