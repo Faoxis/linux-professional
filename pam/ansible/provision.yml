@@ -1,0 +1,135 @@
+---
+- name: Ограничение входа в выходные и доступ к docker
+  hosts: all
+  become: true
+
+  vars:
+    admin_group: admin
+    # Пользователи стенда: обычный и тот, кому можно всё
+    plain_user: otus
+    admin_user: otusadm
+    users_password: 'Otus2022!'
+    # Соль фиксированная: иначе хеш пересчитывается на каждом прогоне
+    # и ansible каждый раз "меняет" пароль
+    password_salt: otuspam2026
+    login_script: /usr/local/bin/login.sh
+    holidays_file: /etc/pam-holidays
+    # Файлы PAM, в которые встраиваем проверку
+    pam_services:
+      - sshd
+      - login
+
+  tasks:
+
+    - name: Разрешить вход по паролю
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*PasswordAuthentication\s'
+        line: 'PasswordAuthentication yes'
+      notify: Перезапустить sshd
+      # Иначе под otus и otusadm с хоста не зайти: ключей у них нет,
+      # а проверять правило надо именно живым входом по ssh.
+
+    - name: Создать группу администраторов
+      group:
+        name: "{{ admin_group }}"
+        state: present
+
+    # В штатном /etc/sudoers Ubuntu есть строка "%admin ALL=(ALL) ALL".
+    # Группа admin у нас определяет только право входить в выходные,
+    # и раздавать вместе с ним root никто не просил. Методичка утверждает,
+    # что членство в admin администратором не делает - на Ubuntu без этого
+    # шага делает, и сразу полный sudo.
+    - name: Убрать раздачу root по группе {{ admin_group }}
+      lineinfile:
+        path: /etc/sudoers
+        regexp: '^%{{ admin_group }}\s'
+        line: '# %{{ admin_group }} ALL=(ALL) ALL   # отключено ansible, см. README'
+        validate: 'visudo -cf %s'
+
+    - name: Создать пользователей
+      user:
+        name: "{{ item }}"
+        password: "{{ users_password | password_hash('sha512', password_salt) }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      loop:
+        - "{{ plain_user }}"
+        - "{{ admin_user }}"
+
+    # Членство в группе admin - это только про наше правило входа,
+    # прав root оно никому не даёт.
+    - name: Добавить администраторов в группу {{ admin_group }}
+      user:
+        name: "{{ item }}"
+        groups: "{{ admin_group }}"
+        append: yes
+      loop:
+        - root
+        - vagrant
+        - "{{ admin_user }}"
+
+    - name: Положить список праздничных дней
+      copy:
+        src: pam-holidays
+        dest: "{{ holidays_file }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Положить скрипт проверки
+      copy:
+        src: login.sh
+        dest: "{{ login_script }}"
+        owner: root
+        group: root
+        mode: '0755'
+
+    # Проверку ставим в стек account, а не auth. При входе по ключу
+    # sshd стек auth не проходит вовсе, и правило, повешенное на auth,
+    # такой вход не остановит. account отрабатывает при любом способе входа.
+    - name: Включить проверку в PAM
+      lineinfile:
+        path: "/etc/pam.d/{{ item }}"
+        line: "account    required     pam_exec.so {{ login_script }}"
+        insertbefore: '^@include common-account'
+        firstmatch: yes
+      loop: "{{ pam_services }}"
+
+    # --- задание со звёздочкой ---
+
+    - name: Установить docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Запустить docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # Группа docker даёт доступ к сокету /var/run/docker.sock,
+    # то есть право запускать контейнеры без sudo
+    - name: Дать {{ admin_user }} доступ к docker
+      user:
+        name: "{{ admin_user }}"
+        groups: docker
+        append: yes
+
+    - name: Разрешить {{ admin_user }} перезапускать docker
+      copy:
+        src: sudoers-docker
+        dest: /etc/sudoers.d/docker-restart
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+  handlers:
+    - name: Перезапустить sshd
+      systemd:
+        name: ssh
+        state: restarted
