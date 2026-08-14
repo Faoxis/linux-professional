@@ -1,0 +1,10 @@
+# Единственный хост, которому дефолт на eth0 нужен: через него стенд ходит в интернет.
+disable_default_on_eth0: false
+
+netplan_routes:
+  eth1:
+    # Обратный маршрут: вся сеть стенда живёт за centralRouter
+    - to: 192.168.0.0/16
+      via: 192.168.255.2
+
+iptables_rules: rules-inetRouter.v4.j2

@@ -1,0 +1,34 @@
+### Управляется ansible. inetRouter2: проброс порта {{ publish_port }} на nginx
+### без маскарадинга.
+
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+
+# Ответный трафик уже установленных соединений
+-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A FORWARD -m conntrack --ctstate INVALID -j DROP
+
+# Пропускаем только новые подключения к проброшенному сервису.
+# Адрес и порт здесь уже подменены: DNAT в PREROUTING отрабатывает
+# раньше, чем пакет попадает в FORWARD.
+-A FORWARD -i eth1 -o eth2 -p tcp -d {{ central_server_ip }} --dport {{ backend_port }} -m conntrack --ctstate NEW -j LOG --log-prefix "[fwd web] "
+-A FORWARD -i eth1 -o eth2 -p tcp -d {{ central_server_ip }} --dport {{ backend_port }} -m conntrack --ctstate NEW -j ACCEPT
+
+COMMIT
+
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+
+# Проброс: {{ inet_router2_hostonly_ip }}:{{ publish_port }} -> {{ central_server_ip }}:{{ backend_port }}
+-A PREROUTING -i eth1 -p tcp --dport {{ publish_port }} -j DNAT --to-destination {{ central_server_ip }}:{{ backend_port }}
+
+# POSTROUTING намеренно пуст: маскарадинга нет.
+# Обратный путь обеспечен не подменой адреса отправителя, а маршрутом
+# {{ hostonly_net }} через {{ inet_router2_ip }} на centralRouter.
+# Благодаря этому nginx видит настоящий адрес клиента.
+COMMIT

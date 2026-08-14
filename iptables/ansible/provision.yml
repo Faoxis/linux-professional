@@ -1,0 +1,138 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+
+  tasks:
+    # Ставим пакеты первым делом: на первом прогоне дефолт ещё висит на eth0
+    # и интернет есть, а дальше он уже пойдёт через inetRouter.
+    - name: Установить утилиты и iptables-persistent
+      apt:
+        name:
+          - iptables-persistent
+          - netcat-openbsd     # им стучимся по портам
+          - conntrack          # смотреть таблицу соединений
+          - traceroute
+        state: present
+        update_cache: yes
+
+    - name: Прописать хосты стенда в /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^{{ item.ip }}\\s"
+        line: "{{ item.ip }} {{ item.name }}"
+      loop:
+        - { ip: "{{ inet_router_ip }}", name: inetRouter }
+        - { ip: "{{ inet_router2_hostonly_ip }}", name: inetRouter2 }
+        - { ip: "{{ central_router_ip }}", name: centralRouter }
+        - { ip: "{{ central_server_ip }}", name: centralServer }
+
+    # У eth0 есть альтернативное имя вида enp0s3, и конфиг от cloud-init
+    # перехватывает интерфейс раньше нашего. Без этого dhcp4-overrides
+    # на eth0 не применяется и дефолт остаётся на NAT.
+    - name: Убрать сетевой конфиг cloud-init
+      file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+
+    - name: Запретить cloud-init настраивать сеть
+      copy:
+        content: "network: {config: disabled}\n"
+        dest: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        mode: '0644'
+
+    # Свои маршруты кладём отдельным файлом: 50-vagrant.yaml принадлежит
+    # vagrant и переписывается на каждом up и reload.
+    - name: Положить маршруты и отключить дефолт на eth0
+      template:
+        src: 99-routes.yaml
+        dest: /etc/netplan/99-routes.yaml
+        mode: '0600'
+      notify: Применить netplan
+
+    - name: Включить форвардинг на роутерах
+      sysctl:
+        name: net.ipv4.conf.all.forwarding
+        value: '1'
+        state: present
+      when: "'routers' in group_names"
+
+    - name: Применить сеть сразу
+      meta: flush_handlers
+
+    - name: Положить правила iptables
+      template:
+        src: "{{ iptables_rules }}"
+        dest: /etc/iptables/rules.v4
+        owner: root
+        group: root
+        mode: '0640'
+      notify: Перечитать iptables
+
+  handlers:
+    - name: Применить netplan
+      command: netplan apply
+
+    - name: Перечитать iptables
+      command: netfilter-persistent reload
+
+- name: Веб-сервер
+  hosts: servers
+  become: true
+
+  tasks:
+    - name: Установить nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Своя страница, чтобы было видно, кто ответил
+      copy:
+        content: |
+          <html><body>
+          <h1>centralServer</h1>
+          <p>nginx на {{ central_server_ip }}:{{ backend_port }}</p>
+          </body></html>
+        dest: /var/www/html/index.nginx-debian.html
+        mode: '0644'
+
+    - name: Запустить nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+- name: Стучащая сторона
+  hosts: centralRouter
+  become: true
+
+  tasks:
+    - name: Положить скрипт стука
+      template:
+        src: knock.sh.j2
+        dest: /usr/local/bin/knock.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    # Ключ нужен, чтобы после стука можно было зайти на inetRouter
+    # без пароля и показать это одной командой.
+    - name: Сгенерировать ssh-ключ пользователю vagrant
+      user:
+        name: vagrant
+        generate_ssh_key: yes
+        ssh_key_type: ed25519
+        ssh_key_file: .ssh/id_ed25519
+        force: no
+
+    - name: Прочитать публичный ключ
+      slurp:
+        src: /home/vagrant/.ssh/id_ed25519.pub
+      register: knock_key
+
+    - name: Разрешить вход этим ключом на inetRouter
+      delegate_to: inetRouter
+      authorized_key:
+        user: vagrant
+        key: "{{ knock_key.content | b64decode }}"
+        comment: centralRouter
