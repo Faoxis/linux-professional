@@ -1,0 +1,12 @@
+netplan_routes:
+  eth1:
+    - to: 0.0.0.0/0
+      via: 192.168.255.1
+  eth5:
+    # office1 целиком за office1Router
+    - to: 192.168.2.0/24
+      via: 192.168.255.10
+  eth6:
+    # office2 целиком за office2Router
+    - to: 192.168.1.0/24
+      via: 192.168.255.6

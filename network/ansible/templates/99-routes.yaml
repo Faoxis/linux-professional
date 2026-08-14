@@ -1,0 +1,19 @@
+network:
+  version: 2
+  ethernets:
+{% if disable_default_on_eth0 | default(true) %}
+    # eth0 - это NAT, который поднимает vagrant. Сам интерфейс нужен (по нему
+    # ходит vagrant ssh), а вот дефолтный маршрут с него убираем.
+    eth0:
+      dhcp4: true
+      dhcp4-overrides:
+        use-routes: false
+{% endif %}
+{% for iface, routes in netplan_routes.items() %}
+    {{ iface }}:
+      routes:
+{% for route in routes %}
+        - to: {{ route.to }}
+          via: {{ route.via }}
+{% endfor %}
+{% endfor %}
