@@ -1,0 +1,47 @@
+# Адаптер N в vagrant соответствует интерфейсу eth(N-1) в госте,
+# eth0 везде занят под NAT, который поднимает сам vagrant.
+#
+# eth1 - транк: все три роутера сидят в одной внутренней сети,
+#        а разводятся по разным широковещательным доменам тегами 802.1Q.
+# eth2 - тупиковая сеть роутера, её он анонсирует в OSPF.
+#
+# auto_config: false у обоих: адреса и vlan-интерфейсы настраивает ansible.
+# Иначе vagrant писал бы свой 50-vagrant.yaml и переписывал его на каждом up.
+MACHINES = {
+  :router1 => { :stub_intnet => "stub1" },
+  :router2 => { :stub_intnet => "stub2" },
+  :router3 => { :stub_intnet => "stub3" },
+}
+
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.define boxname do |box|
+      box.vm.box = "bento/ubuntu-22.04"
+      box.vm.host_name = boxname.to_s
+
+      box.vm.provider :virtualbox do |v|
+        v.memory = 768
+        v.cpus = 1
+      end
+
+      # транк: общий сегмент для всех трёх роутеров
+      box.vm.network "private_network",
+        adapter: 2, auto_config: false, virtualbox__intnet: "ospf-fabric"
+
+      # тупиковая сеть, у каждого роутера своя
+      box.vm.network "private_network",
+        adapter: 3, auto_config: false, virtualbox__intnet: boxconfig[:stub_intnet]
+
+      # Ansible запускаем один раз, когда поднялась последняя машина,
+      # иначе он стартовал бы после каждой и падал на ещё не созданных хостах.
+      if boxname == MACHINES.keys.last
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = { "routers" => ["router1", "router2", "router3"] }
+        end
+      end
+    end
+  end
+end

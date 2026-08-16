@@ -1,0 +1,89 @@
+---
+- name: OSPF на FRR
+  hosts: routers
+  become: true
+
+  tasks:
+
+    - name: Установить FRR и утилиты для разбора сети
+      apt:
+        name:
+          - frr
+          - frr-pythontools
+          - vim
+          - traceroute
+          - tcpdump
+          - net-tools
+        state: present
+        update_cache: yes
+
+    # --- сеть ---
+
+    # Модуль 8021q грузится сам при создании vlan-интерфейса,
+    # но пропишем явно, чтобы он был на месте и после перезагрузки
+    - name: Загрузить модуль 8021q
+      community.general.modprobe:
+        name: 8021q
+        state: present
+        persistent: present
+
+    - name: Настроить транк, vlan-интерфейсы и тупиковую сеть
+      template:
+        src: 99-ospf.yaml.j2
+        dest: /etc/netplan/99-ospf.yaml
+        owner: root
+        group: root
+        mode: '0600'
+      notify: Применить netplan
+
+    - name: Применить сеть сразу
+      meta: flush_handlers
+
+    - name: Включить форвардинг и разрешить асимметричный трафик
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_set: yes
+        reload: yes
+      loop:
+        # Без форвардинга роутер не будет пропускать транзитные пакеты
+        - { name: net.ipv4.conf.all.forwarding, value: '1' }
+        # Обратная проверка пути отбрасывает пакет, если ответ его отправителю
+        # ушёл бы через другой интерфейс. При асимметричном роутинге это ровно
+        # наш случай, поэтому проверку выключаем.
+        - { name: net.ipv4.conf.all.rp_filter, value: '0' }
+        - { name: net.ipv4.conf.default.rp_filter, value: '0' }
+
+    # --- FRR ---
+
+    - name: Включить демон ospfd
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^ospfd='
+        line: 'ospfd=yes'
+      notify: Перезапустить frr
+
+    - name: Положить конфигурацию FRR
+      template:
+        src: frr.conf.j2
+        dest: /etc/frr/frr.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      notify: Перезапустить frr
+
+    - name: Запустить FRR
+      systemd:
+        name: frr
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Применить netplan
+      command: netplan apply
+
+    - name: Перезапустить frr
+      systemd:
+        name: frr
+        state: restarted

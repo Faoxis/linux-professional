@@ -1,0 +1,18 @@
+---
+# Дорогим делаем линк router1 - router2, он же vlan 12.
+expensive_cost: 1000
+
+# Главный переключатель домашней работы.
+#
+#   false - дорог только выход router1 в сторону router2.
+#           Туда трафик идёт в обход через router3, обратно - напрямую.
+#           Это и есть асимметричный роутинг.
+#
+#   true  - дорог выход и со стороны router2 тоже.
+#           Оба конца обходят линк, маршрут снова симметричный,
+#           но идёт по длинному пути.
+#
+# Переключается без правки файла:
+#   ansible-playbook -i .vagrant/provisioners/ansible/inventory/vagrant_ansible_inventory \
+#       ansible/provision.yml -e symmetric_routing=true
+symmetric_routing: false

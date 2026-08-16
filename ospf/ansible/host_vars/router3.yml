@@ -1,0 +1,8 @@
+ospf_router_id: 3.3.3.3
+
+vlan_ifaces:
+  - { id: 13, addr: 10.0.13.2/30, network: 10.0.13.0/30, peer: router1 }
+  - { id: 23, addr: 10.0.23.2/30, network: 10.0.23.0/30, peer: router2 }
+
+stub_addr: 192.168.30.1/24
+stub_network: 192.168.30.0/24

@@ -1,0 +1,8 @@
+ospf_router_id: 2.2.2.2
+
+vlan_ifaces:
+  - { id: 12, addr: 10.0.12.2/30, network: 10.0.12.0/30, peer: router1, cost_mode: symmetric }
+  - { id: 23, addr: 10.0.23.1/30, network: 10.0.23.0/30, peer: router3 }
+
+stub_addr: 192.168.20.1/24
+stub_network: 192.168.20.0/24

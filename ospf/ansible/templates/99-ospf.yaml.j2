@@ -1,0 +1,22 @@
+### Управляется ansible. Свой файл, а не 50-vagrant.yaml:
+### тот принадлежит vagrant и переписывается на каждом up и reload.
+network:
+  version: 2
+  ethernets:
+    # Транк. Своего адреса у него нет: он только несёт тегированные кадры.
+    eth1:
+      dhcp4: false
+      dhcp6: false
+    # Тупиковая сеть роутера, её анонсируем в OSPF
+    eth2:
+      dhcp4: false
+      dhcp6: false
+      addresses: [{{ stub_addr }}]
+  vlans:
+{% for v in vlan_ifaces %}
+    # линк до {{ v.peer }}
+    eth1.{{ v.id }}:
+      id: {{ v.id }}
+      link: eth1
+      addresses: [{{ v.addr }}]
+{% endfor %}

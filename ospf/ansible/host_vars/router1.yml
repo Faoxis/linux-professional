@@ -1,0 +1,11 @@
+ospf_router_id: 1.1.1.1
+
+# vlan-интерфейсы поверх транка eth1.
+# cost_mode: always     - стоимость ставится всегда (создаёт асимметрию)
+#            symmetric  - только когда symmetric_routing = true
+vlan_ifaces:
+  - { id: 12, addr: 10.0.12.1/30, network: 10.0.12.0/30, peer: router2, cost_mode: always }
+  - { id: 13, addr: 10.0.13.1/30, network: 10.0.13.0/30, peer: router3 }
+
+stub_addr: 192.168.10.1/24
+stub_network: 192.168.10.0/24

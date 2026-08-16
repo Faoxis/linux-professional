@@ -1,0 +1,31 @@
+! Управляется ansible.
+! Единый конфиг FRR: integrated-vtysh-config означает, что всё лежит здесь,
+! а не растаскивается по zebra.conf и ospfd.conf.
+frr defaults traditional
+hostname {{ inventory_hostname }}
+log syslog informational
+service integrated-vtysh-config
+!
+{% for v in vlan_ifaces %}
+interface eth1.{{ v.id }}
+ description линк до {{ v.peer }}, vlan {{ v.id }}
+{% if v.cost_mode is defined and (v.cost_mode == 'always' or (v.cost_mode == 'symmetric' and symmetric_routing | bool)) %}
+ ! Дорогой выход: OSPF предпочтёт обход, даже если он длиннее.
+ ! Стоимость односторонняя - она влияет только на маршруты этого роутера.
+ ip ospf cost {{ expensive_cost }}
+{% endif %}
+!
+{% endfor %}
+interface eth2
+ description тупиковая сеть {{ stub_network }}
+!
+router ospf
+ ospf router-id {{ ospf_router_id }}
+{% for v in vlan_ifaces %}
+ network {{ v.network }} area 0
+{% endfor %}
+ network {{ stub_network }} area 0
+ ! Соседей в тупиковой сети нет, hello слать некому,
+ ! но саму сеть анонсировать нужно
+ passive-interface eth2
+!
