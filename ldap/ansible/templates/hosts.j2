@@ -1,0 +1,10 @@
+### Управляется ansible.
+### Отдельного DNS-сервера в стенде нет, поэтому имена домена
+### разрешаются через этот файл. FreeIPA без FQDN не ставится.
+
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+
+{% for h in hosts_entries %}
+{{ h.ip }} {{ h.fqdn }} {{ h.short }}
+{% endfor %}

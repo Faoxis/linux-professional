@@ -1,0 +1,26 @@
+---
+# --- домен ---
+ipa_domain: otus.lan
+ipa_realm: OTUS.LAN
+ipa_server_fqdn: ipa.otus.lan
+ipa_server_ip: 192.168.57.10
+
+# Пароли. В учебном стенде лежат открытым текстом, в жизни это ansible-vault.
+# Directory Manager - администратор самого каталога 389-DS,
+# admin - администратор домена FreeIPA.
+ipa_ds_password: 'OtusLinux2022'
+ipa_admin_password: 'OtusLinux2022'
+
+# --- тестовый пользователь домена ---
+ipa_user: otus-user
+ipa_user_first: Otus
+ipa_user_last: User
+# FreeIPA заводит пароль сразу истёкшим, поэтому паролей два:
+# начальный и тот, на который мы его сразу меняем
+ipa_user_password_initial: 'OtusStart2022'
+ipa_user_password: 'OtusLinux2022'
+
+hosts_entries:
+  - { ip: "{{ ipa_server_ip }}", fqdn: "{{ ipa_server_fqdn }}", short: ipa }
+  - { ip: 192.168.57.11, fqdn: client1.otus.lan, short: client1 }
+  - { ip: 192.168.57.12, fqdn: client2.otus.lan, short: client2 }

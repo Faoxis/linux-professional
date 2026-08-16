@@ -1,0 +1,144 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Установить часовой пояс
+      timezone:
+        name: Europe/Moscow
+
+    # Kerberos очень чувствителен к расхождению часов: билет с перекосом
+    # больше пяти минут отвергается. Синхронизация - не опция.
+    - name: Установить chrony и утилиты
+      dnf:
+        name:
+          - chrony
+          - vim
+          - bind-utils
+          # ldapsearch: им проверяем, что каталог отвечает по сети
+          - openldap-clients
+        state: present
+
+    - name: Запустить chronyd
+      systemd:
+        name: chronyd
+        state: started
+        enabled: yes
+
+    # Отдельного DNS в стенде нет, имена домена разрешаем через /etc/hosts
+    - name: Разложить /etc/hosts
+      template:
+        src: hosts.j2
+        dest: /etc/hosts
+        owner: root
+        group: root
+        mode: '0644'
+
+    # В AlmaLinux firewalld включён по умолчанию и закрывает порты FreeIPA,
+    # из-за чего клиенты не достучались бы до сервера. Как и в методичке,
+    # в учебном стенде его просто выключаем.
+    - name: Выключить firewalld
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+      failed_when: false
+
+- name: Сервер FreeIPA
+  hosts: server
+  become: true
+
+  tasks:
+    - name: Установить сервер FreeIPA
+      dnf:
+        name: ipa-server
+        state: present
+
+    # ipactl возвращает ненулевой код, пока сервер не установлен,
+    # по этому и определяем, надо ли запускать установку
+    - name: Проверить, установлен ли уже FreeIPA
+      command: ipactl status
+      register: ipactl
+      failed_when: false
+      changed_when: false
+
+    # Установка идёт минут десять и требует ответов на десяток вопросов.
+    # Ключ -U отвечает на них значениями из параметров.
+    # --no-host-dns: отдельного DNS нет, имя резолвится через /etc/hosts.
+    - name: Развернуть домен {{ ipa_realm }}
+      command: >
+        ipa-server-install -U
+        --realm={{ ipa_realm }}
+        --domain={{ ipa_domain }}
+        --hostname={{ ipa_server_fqdn }}
+        --ds-password={{ ipa_ds_password }}
+        --admin-password={{ ipa_admin_password }}
+        --no-ntp
+        --no-host-dns
+      when: ipactl.rc != 0
+
+    # --- доменный пользователь ---
+
+    - name: Получить билет администратора
+      shell: echo '{{ ipa_admin_password }}' | kinit admin
+      changed_when: false
+
+    - name: Проверить, есть ли пользователь {{ ipa_user }}
+      command: ipa user-show {{ ipa_user }}
+      register: user_show
+      failed_when: false
+      changed_when: false
+
+    - name: Создать пользователя {{ ipa_user }}
+      shell: >
+        echo '{{ ipa_user_password_initial }}' |
+        ipa user-add {{ ipa_user }}
+        --first={{ ipa_user_first }} --last={{ ipa_user_last }}
+        --password
+      when: user_show.rc != 0
+
+    # FreeIPA выдаёт пароль сразу истёкшим: при первом входе его требуется
+    # сменить. Делаем это сразу, иначе не получится ни kinit, ни вход по ключу.
+    - name: Сменить истёкший пароль на постоянный
+      shell: >
+        printf '%s\n%s\n%s\n'
+        '{{ ipa_user_password_initial }}'
+        '{{ ipa_user_password }}'
+        '{{ ipa_user_password }}' | kinit {{ ipa_user }}
+      when: user_show.rc != 0
+
+    - name: Убрать билет пользователя, вернуть билет администратора
+      shell: kdestroy; echo '{{ ipa_admin_password }}' | kinit admin
+      when: user_show.rc != 0
+      changed_when: false
+
+- name: Клиенты FreeIPA
+  hosts: clients
+  become: true
+
+  tasks:
+    - name: Установить клиент FreeIPA
+      dnf:
+        name: ipa-client
+        state: present
+
+    - name: Проверить, введён ли хост в домен
+      stat:
+        path: /etc/ipa/default.conf
+      register: ipa_conf
+
+    # --mkhomedir создаёт домашний каталог при первом входе доменного
+    # пользователя, иначе входить будет некуда.
+    - name: Ввести хост в домен {{ ipa_realm }}
+      command: >
+        ipa-client-install -U
+        --domain={{ ipa_domain }}
+        --realm={{ ipa_realm }}
+        --server={{ ipa_server_fqdn }}
+        --principal=admin
+        --password={{ ipa_admin_password }}
+        --mkhomedir
+        --no-ntp
+        --force-join
+      when: not ipa_conf.stat.exists
