@@ -1,0 +1,146 @@
+---
+- name: Стенд с тремя веб-приложениями за nginx
+  hosts: all
+  become: true
+
+  tasks:
+
+    # --- docker ---
+
+    - name: Установить зависимости для репозитория docker
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: yes
+
+    - name: Создать каталог для ключей apt
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    # Методичка добавляет ключ через apt_key. Модуль объявлен устаревшим,
+    # он кладёт ключ в общую связку, где тот действует на все репозитории.
+    # Современный способ - отдельный файл ключа и signed-by у репозитория.
+    - name: Положить ключ docker
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+
+    # В методичке кодовое имя жёстко задано как xenial. Берём его из фактов,
+    # иначе на другом релизе подключился бы чужой репозиторий.
+    - name: Подключить репозиторий docker
+      apt_repository:
+        repo: >-
+          deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else ansible_architecture }}
+          signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+        update_cache: yes
+
+    - name: Установить docker и плагин compose
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          # compose v2 как плагин docker, а не отдельный бинарь docker-compose
+          - docker-compose-plugin
+        state: present
+
+    - name: Запустить docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Добавить vagrant в группу docker
+      user:
+        name: vagrant
+        groups: docker
+        append: yes
+
+    # --- проект ---
+
+    - name: Создать каталог проекта
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Скопировать исходники приложений
+      copy:
+        src: app/
+        dest: "{{ project_dir }}/"
+        owner: vagrant
+        group: vagrant
+        mode: preserve
+      register: sources
+
+    # template родительские каталоги не создаёт, а в исходниках приложений
+    # каталога под конфиг nginx нет
+    - name: Создать каталог под конфигурацию nginx
+      file:
+        path: "{{ project_dir }}/nginx/conf.d"
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Положить конфигурацию nginx
+      template:
+        src: sites.conf.j2
+        dest: "{{ project_dir }}/nginx/conf.d/sites.conf"
+        owner: vagrant
+        group: vagrant
+        mode: '0644'
+      register: nginx_conf
+
+    - name: Положить docker-compose.yml
+      template:
+        src: docker-compose.yml.j2
+        dest: "{{ project_dir }}/docker-compose.yml"
+        owner: vagrant
+        group: vagrant
+        mode: '0644'
+      register: compose_file
+
+    # --- запуск ---
+
+    # Сборка отделена от запуска намеренно.
+    #
+    # Пересобираем только когда что-то поменялось: даже при неизменных исходниках
+    # сборка даёт новый id образа, тег переезжает на него, а работающие контейнеры
+    # остаются ссылаться на старый. Дальше "docker compose images" не находит его
+    # и падает с "No such image".
+    - name: Пересобрать образы, если изменились исходники
+      command: docker compose build
+      args:
+        chdir: "{{ project_dir }}"
+      when: sources.changed or compose_file.changed
+      changed_when: true
+
+    # Модуль работает через docker compose v2, отдельный python-клиент не нужен.
+    # build: never здесь постоянно, а не по условию: если параметры запуска
+    # меняются от прогона к прогону, compose считает конфигурацию другой
+    # и лишний раз пересоздаёт контейнеры.
+    - name: Поднять стенд
+      community.docker.docker_compose_v2:
+        project_src: "{{ project_dir }}"
+        state: present
+        build: never
+      register: compose_up
+
+    - name: Перечитать конфигурацию nginx, если она поменялась
+      command: docker compose exec -T nginx nginx -s reload
+      args:
+        chdir: "{{ project_dir }}"
+      when: nginx_conf.changed and not compose_up.changed

@@ -1,0 +1,15 @@
+[package]
+name = "otus-web-rust"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+# rt-multi-thread и macros нужны для #[tokio::main]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde_json = "1"
+
+[profile.release]
+# Символы в бинарнике не нужны. Агрессивную оптимизацию (lto, opt-level="z")
+# намеренно не включаем: она заметно удлиняет сборку, а выигрыш тут не нужен.
+strip = true

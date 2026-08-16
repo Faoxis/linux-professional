@@ -1,0 +1,32 @@
+require 'yaml'
+
+# Порты читаем из того же файла, что и ansible. Иначе номера пришлось бы
+# держать в двух местах, и рано или поздно они разъехались бы между
+# пробросом vagrant и конфигом nginx.
+SITES = YAML.load_file(
+  File.expand_path('../ansible/group_vars/all.yml', __FILE__)
+)['sites']
+
+Vagrant.configure("2") do |config|
+  config.vm.define "web" do |box|
+    box.vm.box = "bento/ubuntu-22.04"
+    box.vm.host_name = "web"
+
+    # Каждый сайт слушает свой порт, и каждый пробрасывается на локалхост
+    SITES.each do |site|
+      box.vm.network "forwarded_port",
+        guest: site['port'], host: site['port'], host_ip: "127.0.0.1"
+    end
+
+    box.vm.provider "virtualbox" do |v|
+      # Сборка трёх образов из исходников: jvm и rust заметно упираются в cpu
+      v.memory = 4096
+      v.cpus = 4
+    end
+
+    box.vm.provision "ansible" do |ansible|
+      ansible.playbook = "ansible/provision.yml"
+      ansible.host_key_checking = "false"
+    end
+  end
+end

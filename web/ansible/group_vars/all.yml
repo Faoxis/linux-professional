@@ -1,0 +1,27 @@
+---
+# Каталог проекта на виртуальной машине
+project_dir: /opt/web
+
+# Единственный источник правды по сайтам и портам.
+# Этот же файл читает Vagrantfile, чтобы пробросить порты на локалхост:
+# так номера портов не разъезжаются между vagrant, nginx и compose.
+#
+#   name     - имя сервиса в compose и каталога с исходниками
+#   title    - как приложение подписано на странице
+#   port     - порт на хосте и он же порт, который слушает nginx в контейнере
+#   upstream - куда nginx проксирует внутри сети compose
+sites:
+  - name: java
+    title: Java Spring Boot
+    port: 8081
+    upstream: "java:8080"
+
+  - name: go
+    title: Go
+    port: 8082
+    upstream: "go:8080"
+
+  - name: rust
+    title: Rust
+    port: 8083
+    upstream: "rust:8080"

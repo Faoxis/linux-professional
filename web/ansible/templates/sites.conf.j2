@@ -1,0 +1,36 @@
+### Управляется ansible, шаблон templates/sites.conf.j2
+### Один server-блок на каждый сайт: свой порт - своё приложение.
+
+{% for site in sites %}
+# --- {{ site.title }}: localhost:{{ site.port }} -> {{ site.upstream }} ---
+upstream {{ site.name }}_app {
+    server {{ site.upstream }};
+}
+
+server {
+    listen {{ site.port }};
+    listen [::]:{{ site.port }};
+    server_name localhost;
+
+    access_log /var/log/nginx/{{ site.name }}.access.log;
+    error_log  /var/log/nginx/{{ site.name }}.error.log;
+
+    location / {
+        proxy_pass http://{{ site.name }}_app;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # По этому заголовку приложение на странице показывает,
+        # что запрос пришёл через nginx, а не напрямую
+        proxy_set_header X-Served-By "nginx :{{ site.port }} -> {{ site.upstream }}";
+
+        # Тем же заголовком помечаем ответ - видно в curl -I
+        add_header X-Served-By "nginx :{{ site.port }} -> {{ site.upstream }}" always;
+    }
+}
+
+{% endfor %}

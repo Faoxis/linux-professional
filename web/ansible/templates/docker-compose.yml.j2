@@ -1,0 +1,44 @@
+### Управляется ansible, шаблон templates/docker-compose.yml.j2
+
+services:
+{% for site in sites %}
+  # {{ site.title }}: свой образ собирается из ./{{ site.name }}
+  {{ site.name }}:
+    build: ./{{ site.name }}
+    container_name: web-{{ site.name }}
+    restart: unless-stopped
+    environment:
+      # Внутри сети все приложения слушают один и тот же порт:
+      # имена контейнеров их и так разводят
+      APP_PORT: "8080"
+      # Только чтобы приложение могло показать на странице,
+      # на каком порту хоста оно опубликовано
+      PUBLISHED_PORT: "{{ site.port }}"
+    # Порты наружу не публикуем: единственная точка входа - nginx
+    expose:
+      - "8080"
+    networks:
+      - web
+
+{% endfor %}
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: web-nginx
+    restart: unless-stopped
+    ports:
+{% for site in sites %}
+      # {{ site.title }}
+      - "{{ site.port }}:{{ site.port }}"
+{% endfor %}
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+{% for site in sites %}
+      - {{ site.name }}
+{% endfor %}
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
