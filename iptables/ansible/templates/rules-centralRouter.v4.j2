@@ -1,0 +1,21 @@
+### Управляется ansible. centralRouter: транзит, своих трансляций нет.
+
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+
+# Логируем новые транзитные подключения к nginx: по этой записи видно,
+# что трафик с хоста действительно идёт через centralRouter,
+# и виден исходный адрес клиента - маскарадинга по пути нет.
+-A FORWARD -p tcp -d {{ central_server_ip }} --dport {{ backend_port }} -m conntrack --ctstate NEW -j LOG --log-prefix "[web transit] "
+
+COMMIT
+
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+# Пусто: centralRouter только маршрутизирует и ничего не транслирует
+COMMIT

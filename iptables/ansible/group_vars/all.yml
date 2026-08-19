@@ -1,0 +1,25 @@
+---
+# --- адреса стенда ---
+inet_router_ip:   192.168.255.1     # линк inetRouter  <-> centralRouter
+central_router_ip: 192.168.255.2
+inet_router2_ip:  192.168.255.5     # линк inetRouter2 <-> centralRouter
+central_router_ip2: 192.168.255.6
+
+central_net: 192.168.0.0/28
+central_server_ip: 192.168.0.2
+central_server_gw: 192.168.0.1
+
+# Host-only сеть: через неё стенд виден с хоста
+hostonly_net: 192.168.56.0/24
+inet_router2_hostonly_ip: 192.168.56.20
+
+# --- проброс порта ---
+publish_port: 8080                  # порт на inetRouter2
+backend_port: 80                    # порт nginx на centralServer
+
+# --- port knocking ---
+# Последовательность стука. Порядок важен, промежуток между стуками
+# ограничен knock_stage_seconds.
+knock_ports: [7000, 8000, 9000]
+knock_stage_seconds: 15             # сколько живёт промежуточный этап
+knock_open_seconds: 60              # на сколько открывается ssh после стука

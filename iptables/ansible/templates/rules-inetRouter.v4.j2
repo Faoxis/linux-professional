@@ -1,0 +1,57 @@
+### Управляется ansible. inetRouter: выход в интернет и ssh за port knocking.
+
+*filter
+:INPUT DROP [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:KNOCK1 - [0:0]
+:KNOCK2 - [0:0]
+:KNOCK3 - [0:0]
+
+# Первым правилом - управляющий интерфейс vagrant. Политика INPUT здесь DROP,
+# и без этой строки первый же iptables-restore отрезал бы нас от машины.
+-A INPUT -i eth0 -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p icmp -j ACCEPT
+
+# --- ssh за стуком -----------------------------------------------------------
+# Пускаем только того, кто за последние {{ knock_open_seconds }} секунд отстучал
+# всю последовательность. Уже установленная сессия живёт по правилу ESTABLISHED
+# и после закрытия окна не рвётся.
+-A INPUT -i eth1 -p tcp --dport 22 -m recent --rcheck --seconds {{ knock_open_seconds }} --name KNOCKED -j ACCEPT
+-A INPUT -i eth1 -p tcp --dport 22 -j LOG --log-prefix "[knock ssh deny] "
+
+# --- последовательность стука ------------------------------------------------
+# Каждый этап - отдельная цепочка. Все пакеты стука в итоге дропаются:
+# снаружи порты выглядят закрытыми, стучащий не получает ответа.
+-A INPUT -i eth1 -p tcp --dport {{ knock_ports[0] }} -j KNOCK1
+-A INPUT -i eth1 -p tcp --dport {{ knock_ports[1] }} -j KNOCK2
+-A INPUT -i eth1 -p tcp --dport {{ knock_ports[2] }} -j KNOCK3
+
+# Этап 1: запоминаем адрес в списке STAGE1
+-A KNOCK1 -j LOG --log-prefix "[knock 1/3] "
+-A KNOCK1 -m recent --name STAGE1 --set -j DROP
+
+# Этап 2: засчитываем, только если этот адрес недавно прошёл этап 1
+-A KNOCK2 -m recent --rcheck --seconds {{ knock_stage_seconds }} --name STAGE1 -j LOG --log-prefix "[knock 2/3] "
+-A KNOCK2 -m recent --rcheck --seconds {{ knock_stage_seconds }} --name STAGE1 -m recent --name STAGE2 --set -j DROP
+-A KNOCK2 -j DROP
+
+# Этап 3: то же с этапом 2, и адрес попадает в список KNOCKED
+-A KNOCK3 -m recent --rcheck --seconds {{ knock_stage_seconds }} --name STAGE2 -j LOG --log-prefix "[knock 3/3 ok] "
+-A KNOCK3 -m recent --rcheck --seconds {{ knock_stage_seconds }} --name STAGE2 -m recent --name KNOCKED --set -j DROP
+-A KNOCK3 -j DROP
+
+COMMIT
+
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+# Наружу выпускаем всё, что не адресовано внутрь стенда
+-A POSTROUTING ! -d 192.168.0.0/16 -o eth0 -j MASQUERADE
+COMMIT

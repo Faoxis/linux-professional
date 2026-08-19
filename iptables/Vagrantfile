@@ -1,0 +1,72 @@
+# Адаптер N в vagrant соответствует интерфейсу eth(N-1) в госте:
+# eth0 везде занят под NAT, который поднимает сам vagrant.
+#
+# Сети с virtualbox__intnet - внутренние, с хоста не видны.
+# У inetRouter2 адаптер 2 задан без intnet: это host-only сеть,
+# именно через неё хост попадает на проброшенный порт.
+MACHINES = {
+  :inetRouter => {
+    :net => [
+      ["192.168.255.1",  2, "255.255.255.252", "link-inet"],
+    ]
+  },
+
+  :inetRouter2 => {
+    :net => [
+      ["192.168.56.20",  2, "255.255.255.0",   nil],
+      ["192.168.255.5",  3, "255.255.255.252", "link-inet2"],
+    ]
+  },
+
+  :centralRouter => {
+    :net => [
+      ["192.168.255.2",  2, "255.255.255.252", "link-inet"],
+      ["192.168.0.1",    3, "255.255.255.240", "central-net"],
+      ["192.168.255.6",  4, "255.255.255.252", "link-inet2"],
+    ]
+  },
+
+  :centralServer => {
+    :net => [
+      ["192.168.0.2",    2, "255.255.255.240", "central-net"],
+    ]
+  },
+}
+
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.define boxname do |box|
+      box.vm.box = "bento/ubuntu-22.04"
+      box.vm.host_name = boxname.to_s
+
+      box.vm.provider "virtualbox" do |v|
+        v.memory = 768
+        v.cpus = 1
+      end
+
+      boxconfig[:net].each do |ip, adapter, netmask, intnet|
+        if intnet.nil?
+          box.vm.network "private_network",
+            ip: ip, adapter: adapter, netmask: netmask
+        else
+          box.vm.network "private_network",
+            ip: ip, adapter: adapter, netmask: netmask, virtualbox__intnet: intnet
+        end
+      end
+
+      # Ansible запускаем один раз, когда поднялась последняя машина,
+      # иначе он стартовал бы после каждой и падал на ещё не созданных хостах.
+      if boxname == MACHINES.keys.last
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = {
+            "routers" => ["inetRouter", "inetRouter2", "centralRouter"],
+            "servers" => ["centralServer"],
+          }
+        end
+      end
+    end
+  end
+end
