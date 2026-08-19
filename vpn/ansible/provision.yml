@@ -1,0 +1,215 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Установить openvpn, easy-rsa и iperf3
+      apt:
+        name:
+          - openvpn
+          - easy-rsa
+          - iperf3
+        state: present
+        update_cache: yes
+
+    - name: Создать каталог для логов
+      file:
+        path: /var/log/openvpn
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+- name: Сервер
+  hosts: server
+  become: true
+
+  tasks:
+
+    # --- задание 1: два туннеля точка-точка на общем ключе ---
+
+    - name: Сгенерировать статический ключ
+      command: "openvpn --genkey secret {{ static_key }}"
+      args:
+        creates: "{{ static_key }}"
+
+    - name: Прочитать статический ключ, чтобы отдать его клиенту
+      slurp:
+        src: "{{ static_key }}"
+      register: static_key_content
+
+    - name: Положить конфигурации туннелей
+      template:
+        src: p2p.conf.j2
+        dest: "/etc/openvpn/{{ tunnel.name }}.conf"
+        owner: root
+        group: root
+        mode: '0640'
+      loop: "{{ p2p_tunnels }}"
+      loop_control:
+        loop_var: tunnel
+        label: "{{ tunnel.name }}"
+      register: p2p_configs
+
+    # --- задание 2: PKI ---
+
+    - name: Создать каталог RAS
+      file:
+        path: "{{ ras_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    # EASYRSA_BATCH убирает интерактивные вопросы. Методичка обходит их
+    # через echo в пайп, но такой способ ломается от версии к версии:
+    # достаточно поменяться числу или порядку вопросов.
+    - name: Инициализировать PKI
+      command: "{{ easyrsa }} init-pki"
+      args:
+        chdir: "{{ ras_dir }}"
+        creates: "{{ ras_dir }}/pki"
+      environment: &easyrsa_env
+        EASYRSA_BATCH: "1"
+        EASYRSA_REQ_CN: "otus-vpn-ca"
+
+    - name: Создать корневой сертификат
+      command: "{{ easyrsa }} build-ca nopass"
+      args:
+        chdir: "{{ ras_dir }}"
+        creates: "{{ ras_dir }}/pki/ca.crt"
+      environment: *easyrsa_env
+
+    # build-server-full делает запрос и подпись одним шагом
+    - name: Выпустить сертификат сервера
+      command: "{{ easyrsa }} build-server-full server nopass"
+      args:
+        chdir: "{{ ras_dir }}"
+        creates: "{{ ras_dir }}/pki/issued/server.crt"
+      environment: *easyrsa_env
+
+    - name: Выпустить сертификат клиента
+      command: "{{ easyrsa }} build-client-full {{ ras_client_name }} nopass"
+      args:
+        chdir: "{{ ras_dir }}"
+        creates: "{{ ras_dir }}/pki/issued/{{ ras_client_name }}.crt"
+      environment: *easyrsa_env
+
+    # Самый долгий шаг, около минуты
+    - name: Сгенерировать параметры Диффи-Хеллмана
+      command: "{{ easyrsa }} gen-dh"
+      args:
+        chdir: "{{ ras_dir }}"
+        creates: "{{ ras_dir }}/pki/dh.pem"
+      environment: *easyrsa_env
+
+    - name: Положить конфигурацию RAS
+      template:
+        src: ras.conf.j2
+        dest: /etc/openvpn/ras.conf
+        owner: root
+        group: root
+        mode: '0640'
+      register: ras_config
+
+    # --- готовый профиль для хост-машины ---
+
+    - name: Прочитать сертификаты и ключ клиента
+      slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ ras_dir }}/pki/ca.crt"
+        - "{{ ras_dir }}/pki/issued/{{ ras_client_name }}.crt"
+        - "{{ ras_dir }}/pki/private/{{ ras_client_name }}.key"
+      register: ras_certs
+
+    - name: Собрать профиль {{ ras_client_name }}.ovpn
+      template:
+        src: client.ovpn.j2
+        dest: "/root/{{ ras_client_name }}.ovpn"
+        owner: root
+        group: root
+        mode: '0600'
+      vars:
+        # easy-rsa кладёт перед сертификатом текстовую шапку с реквизитами.
+        # openvpn её терпит, но в профиле она только мешает читать,
+        # поэтому оставляем начиная с самого PEM-блока.
+        pem: '-----BEGIN CERTIFICATE-----'
+        ca_cert: "{{ (pem ~ (ras_certs.results[0].content | b64decode).split(pem)[1]) | trim }}"
+        client_cert: "{{ (pem ~ (ras_certs.results[1].content | b64decode).split(pem)[1]) | trim }}"
+        client_key: "{{ ras_certs.results[2].content | b64decode | trim }}"
+
+    # Профиль содержит приватный ключ, поэтому каталог client/ закрыт
+    # от git через vpn/.gitignore
+    - name: Забрать профиль на хост-машину
+      fetch:
+        src: "/root/{{ ras_client_name }}.ovpn"
+        dest: "{{ playbook_dir }}/../client/{{ ras_client_name }}.ovpn"
+        flat: yes
+
+    # --- iperf3 ---
+
+    - name: Положить юнит iperf3
+      template:
+        src: iperf3-server.service.j2
+        dest: /etc/systemd/system/iperf3-server.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: iperf_unit
+
+    - name: Перечитать systemd
+      systemd:
+        daemon_reload: yes
+      when: iperf_unit.changed
+
+    - name: Запустить туннели и iperf3 на сервере
+      systemd:
+        name: "{{ item.unit }}"
+        state: "{{ 'restarted' if item.changed else 'started' }}"
+        enabled: yes
+      loop:
+        - { unit: "openvpn@p2p-tun",  changed: "{{ p2p_configs.changed }}" }
+        - { unit: "openvpn@p2p-tap",  changed: "{{ p2p_configs.changed }}" }
+        - { unit: "openvpn@ras",      changed: "{{ ras_config.changed }}" }
+        - { unit: "iperf3-server",    changed: "{{ iperf_unit.changed }}" }
+      loop_control:
+        label: "{{ item.unit }}"
+
+- name: Клиент
+  hosts: client
+  become: true
+
+  tasks:
+    - name: Положить статический ключ, полученный с сервера
+      copy:
+        content: "{{ hostvars['server'].static_key_content.content | b64decode }}"
+        dest: "{{ static_key }}"
+        owner: root
+        group: root
+        mode: '0600'
+      register: client_key
+
+    - name: Положить конфигурации туннелей
+      template:
+        src: p2p.conf.j2
+        dest: "/etc/openvpn/{{ tunnel.name }}.conf"
+        owner: root
+        group: root
+        mode: '0640'
+      loop: "{{ p2p_tunnels }}"
+      loop_control:
+        loop_var: tunnel
+        label: "{{ tunnel.name }}"
+      register: client_configs
+
+    - name: Запустить туннели
+      systemd:
+        name: "openvpn@{{ tunnel.name }}"
+        state: "{{ 'restarted' if (client_configs.changed or client_key.changed) else 'started' }}"
+        enabled: yes
+      loop: "{{ p2p_tunnels }}"
+      loop_control:
+        loop_var: tunnel
+        label: "{{ tunnel.name }}"

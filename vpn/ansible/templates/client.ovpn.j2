@@ -1,0 +1,29 @@
+### Управляется ansible. Готовый профиль для подключения с хост-машины.
+### Сертификаты и ключ вшиты внутрь, отдельные файлы носить с собой не нужно.
+
+client
+dev tun
+proto udp
+remote {{ server_ip }} {{ ras_port }}
+
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+
+# Проверяем, что подключились именно к серверу
+remote-cert-tls server
+
+verb 3
+
+<ca>
+{{ ca_cert }}
+</ca>
+
+<cert>
+{{ client_cert }}
+</cert>
+
+<key>
+{{ client_key }}
+</key>

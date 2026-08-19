@@ -1,0 +1,34 @@
+MACHINES = {
+  :server => { :ip => "192.168.56.10" },
+  :client => { :ip => "192.168.56.20" },
+}
+
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.define boxname do |box|
+      box.vm.box = "bento/ubuntu-22.04"
+      box.vm.host_name = "#{boxname}.loc"
+
+      # Сеть host-only, а не внутренняя: по заданию к VPN-серверу
+      # надо подключиться именно с хостовой машины, значит она
+      # должна его видеть.
+      box.vm.network "private_network", ip: boxconfig[:ip]
+
+      box.vm.provider :virtualbox do |v|
+        v.memory = 1024
+        v.cpus = 2
+      end
+
+      # Плейбук запускается один раз, на последней машине и сразу на обе:
+      # клиент забирает с сервера общий статический ключ, поэтому сервер
+      # должен быть настроен раньше. Порядок плеев это обеспечивает.
+      if boxname == MACHINES.keys.last
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+        end
+      end
+    end
+  end
+end

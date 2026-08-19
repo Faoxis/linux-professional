@@ -1,0 +1,33 @@
+---
+server_ip: 192.168.56.10
+client_ip: 192.168.56.20
+
+# --- задание 1: два туннеля точка-точка на общем статическом ключе ---
+#
+# Оба поднимаются одновременно, на разных портах. Так замеры tun и tap
+# делаются в одинаковых условиях, без перенастройки между ними:
+# методичка предлагает поменять одну директиву dev и прогнать заново,
+# но тогда результаты разнесены во времени и сравнивать их честно нельзя.
+static_key: /etc/openvpn/static.key
+
+p2p_tunnels:
+  - name: p2p-tun
+    dev: tun
+    port: 1194
+    server_addr: 10.8.0.1
+    client_addr: 10.8.0.2
+
+  - name: p2p-tap
+    dev: tap
+    port: 1195
+    server_addr: 10.9.0.1
+    client_addr: 10.9.0.2
+    netmask: 255.255.255.0
+
+# --- задание 2: RAS с клиентскими сертификатами ---
+ras_port: 1207
+ras_subnet: 10.10.10.0
+ras_netmask: 255.255.255.0
+ras_dir: /etc/openvpn/ras
+easyrsa: /usr/share/easy-rsa/easyrsa
+ras_client_name: laptop

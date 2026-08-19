@@ -1,0 +1,40 @@
+### Управляется ansible. Туннель {{ tunnel.name }}, режим {{ tunnel.dev }}.
+### Точка-точка на общем статическом ключе, без PKI.
+
+dev {{ tunnel.dev }}
+proto udp
+{% if inventory_hostname == 'server' %}
+port {{ tunnel.port }}
+{% else %}
+remote {{ server_ip }} {{ tunnel.port }}
+{# Без nobind клиент занимает локальный порт 1194 независимо от того,
+   на какой порт он подключается. Туннелей у нас два, и второй падает
+   с "Address already in use". nobind заставляет взять случайный порт. #}
+nobind
+{% endif %}
+
+{% if tunnel.dev == 'tun' %}
+{# tun - чистая точка-точка на третьем уровне: свой адрес и адрес соседа #}
+ifconfig {{ tunnel.server_addr if inventory_hostname == 'server' else tunnel.client_addr }} {{ tunnel.client_addr if inventory_hostname == 'server' else tunnel.server_addr }}
+{% else %}
+{# tap - интерфейс ведёт себя как ethernet, поэтому адрес задаётся с маской #}
+ifconfig {{ tunnel.server_addr if inventory_hostname == 'server' else tunnel.client_addr }} {{ tunnel.netmask }}
+{% endif %}
+
+secret {{ static_key }}
+
+# Сжатие намеренно выключено.
+# В методичке стоит comp-lzo, но замерять скорость со сжатием бессмысленно:
+# iperf3 гонит однообразные данные, они жмутся в разы, и вместо пропускной
+# способности туннеля получаются цифры работы компрессора. Плюс comp-lzo
+# объявлен устаревшим и выкинут в OpenVPN 2.6.
+
+persist-key
+persist-tun
+keepalive 10 60
+
+# status здесь не задаём: штатный юнит openvpn@.service в Ubuntu уже
+# передаёт --status /run/openvpn/{{ tunnel.name }}.status, а повтор
+# директивы openvpn не принимает
+log-append /var/log/openvpn/{{ tunnel.name }}.log
+verb 3

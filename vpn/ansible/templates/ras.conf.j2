@@ -1,0 +1,27 @@
+### Управляется ansible. RAS на OpenVPN с клиентскими сертификатами.
+
+port {{ ras_port }}
+proto udp
+dev tun
+
+ca   {{ ras_dir }}/pki/ca.crt
+cert {{ ras_dir }}/pki/issued/server.crt
+key  {{ ras_dir }}/pki/private/server.key
+dh   {{ ras_dir }}/pki/dh.pem
+
+server {{ ras_subnet }} {{ ras_netmask }}
+
+# Клиент должен убедиться, что на той стороне сервер, а не другой клиент
+# с сертификатом того же центра сертификации
+remote-cert-tls client
+
+keepalive 10 120
+persist-key
+persist-tun
+
+# После инициализации сбрасываем привилегии
+user nobody
+group nogroup
+
+log-append /var/log/openvpn/ras.log
+verb 3

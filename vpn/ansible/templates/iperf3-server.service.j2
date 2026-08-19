@@ -1,0 +1,14 @@
+### Управляется ansible. Держим iperf3 в режиме сервера постоянно,
+### чтобы замеры можно было повторить в любой момент, не заходя на машину.
+
+[Unit]
+Description=iperf3 server for VPN throughput tests
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/iperf3 --server --interval 5
+Restart=on-failure
+User=nobody
+
+[Install]
+WantedBy=multi-user.target
