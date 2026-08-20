@@ -1,0 +1,239 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: yes
+  tasks:
+    - name: Поставить пакеты
+      dnf:
+        name:
+          - bind        # на клиентах нужен ради rndc, служба там не включается
+          - bind-utils
+        state: present
+
+    # На серверах DNS должно совпадать время, иначе разъезжаются подписи TSIG
+    # и slave считает зону просроченной. В AlmaLinux синхронизацией занимается
+    # chronyd, ставить отдельный ntpd, как предлагает методичка, незачем.
+    - name: Включить синхронизацию времени
+      service:
+        name: chronyd
+        state: started
+        enabled: yes
+
+    # NetworkManager по умолчанию сам переписывает resolv.conf адресами
+    # из DHCP на eth0, и наш файл не доживает до первого запроса.
+    - name: Запретить NetworkManager трогать resolv.conf
+      copy:
+        content: |
+          # Сгенерировано ansible
+          [main]
+          dns=none
+        dest: /etc/NetworkManager/conf.d/00-dns-none.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: перечитать конфигурацию NetworkManager
+
+    - name: Применить настройку до записи resolv.conf
+      meta: flush_handlers
+
+    - name: Разложить resolv.conf
+      template:
+        src: resolv.conf.j2
+        dest: /etc/resolv.conf
+        owner: root
+        group: root
+        mode: "0644"
+
+  handlers:
+    - name: перечитать конфигурацию NetworkManager
+      service:
+        name: NetworkManager
+        state: reloaded
+
+# serial: 1 - плейбук целиком отрабатывает сначала на ns01 и только потом
+# на ns02. Иначе слейв мог бы перезапуститься раньше мастера, не забрать зоны
+# и просидеть пустым до следующей попытки, а это 10 минут по retry в SOA.
+- name: Серверы DNS
+  hosts: servers
+  become: yes
+  serial: 1
+  order: inventory
+  tasks:
+    - name: Создать каталог для ключей
+      file:
+        path: "{{ keys_dir }}"
+        state: directory
+        owner: root
+        group: named
+        mode: "0750"
+
+    # Секретов в репозитории нет: ключи рождаются на ns01 при первом прогоне
+    # и оттуда расходятся. creates: не даёт перевыпустить их на втором запуске,
+    # иначе стенд разваливался бы при каждом vagrant provision.
+    - name: Сгенерировать ключи TSIG на ns01
+      shell: "tsig-keygen -a hmac-sha256 {{ item }} > {{ keys_dir }}/{{ item }}.key"
+      args:
+        creates: "{{ keys_dir }}/{{ item }}.key"
+      loop: "{{ tsig_keys }}"
+      delegate_to: ns01
+      run_once: yes
+
+    - name: Прочитать ключи
+      slurp:
+        src: "{{ keys_dir }}/{{ item }}.key"
+      loop: "{{ tsig_keys }}"
+      delegate_to: ns01
+      run_once: yes
+      register: tsig_key_files
+
+    - name: Разложить ключи по серверам
+      copy:
+        content: "{{ item.content | b64decode }}"
+        dest: "{{ keys_dir }}/{{ item.item }}.key"
+        owner: root
+        group: named
+        mode: "0640"
+      loop: "{{ tsig_key_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      notify: перезапустить named
+
+    - name: Создать каталог для файлов зон
+      file:
+        path: "{{ zones_dir }}"
+        state: directory
+        owner: root
+        group: named
+        mode: "0750"
+      when: inventory_hostname == 'ns01'
+
+    # Каждому представлению - свой каталог: имена файлов зон в них совпадают,
+    # а содержимое разное.
+    - name: Создать каталоги под копии зон
+      file:
+        path: "{{ slaves_dir }}/{{ item.name }}"
+        state: directory
+        owner: named
+        group: named
+        mode: "0770"
+      loop: "{{ views }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: inventory_hostname == 'ns02'
+
+    - name: Разложить статические зоны на ns01
+      template:
+        src: zone.j2
+        dest: "{{ zones_dir }}/{{ z.name }}"
+        owner: root
+        group: named
+        mode: "0640"
+      loop: "{{ zone_files | rejectattr('dynamic', 'defined') | list }}"
+      loop_control:
+        loop_var: z
+        label: "{{ z.name }}"
+      when: inventory_hostname == 'ns01'
+      notify: перезапустить named
+
+    # Зону под nsupdate шаблон только создаёт: дальше её правит сам named,
+    # и перезаписывать файл на каждом прогоне значило бы затирать обновления.
+    - name: Создать динамическую зону на ns01
+      template:
+        src: zone.j2
+        dest: "{{ dynamic_dir }}/{{ z.name }}"
+        owner: named
+        group: named
+        mode: "0660"
+        force: no
+      loop: "{{ zone_files | selectattr('dynamic', 'defined') | list }}"
+      loop_control:
+        loop_var: z
+        label: "{{ z.name }}"
+      when: inventory_hostname == 'ns01'
+      notify: перезапустить named
+
+    # Без этого named ходит в корневые серверы по IPv6, который в стенде
+    # никуда не ведёт, и рекурсия просто отваливается по таймауту.
+    - name: Заставить named работать по IPv4
+      lineinfile:
+        path: /etc/sysconfig/named
+        regexp: '^OPTIONS='
+        line: 'OPTIONS="-4"'
+        create: yes
+        owner: root
+        group: root
+        mode: "0644"
+      notify: перезапустить named
+
+    - name: Собрать named.conf
+      template:
+        src: named.conf.j2
+        dest: /etc/named.conf
+        owner: root
+        group: named
+        mode: "0640"
+        validate: named-checkconf %s
+      notify: перезапустить named
+
+    - name: Положить rndc.conf серверу
+      template:
+        src: rndc.conf.j2
+        dest: /etc/rndc.conf
+        owner: root
+        group: named
+        mode: "0640"
+      vars:
+        rndc_key_file: "{{ keys_dir }}/rndc-key.key"
+        rndc_server: 127.0.0.1
+
+    - name: Запустить named
+      service:
+        name: named
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: перезапустить named
+      service:
+        name: named
+        state: restarted
+
+- name: Клиенты
+  hosts: clients
+  become: yes
+  vars:
+    # Ключи прочитаны в предыдущей игре, повторно ходить на ns01 незачем.
+    tsig_key_files: "{{ hostvars['ns01'].tsig_key_files }}"
+    own_tsig_key: "{{ 'client-key' if inventory_hostname == 'client' else 'client2-key' }}"
+  tasks:
+    # Клиенту нужны только два ключа из четырёх: свой, чтобы показать вход
+    # в представление по ключу, и rndc-key для управления сервером.
+    - name: Положить клиенту его ключи
+      copy:
+        content: "{{ (tsig_key_files.results | selectattr('item', 'equalto', item) | first).content | b64decode }}"
+        dest: "/home/vagrant/{{ item }}.key"
+        owner: vagrant
+        group: vagrant
+        mode: "0600"
+      loop:
+        - "{{ own_tsig_key }}"
+        - rndc-key
+
+    - name: Положить клиенту rndc.conf
+      template:
+        src: rndc.conf.j2
+        dest: /home/vagrant/rndc.conf
+        owner: vagrant
+        group: vagrant
+        mode: "0600"
+      vars:
+        rndc_key_file: /home/vagrant/rndc-key.key
+        rndc_server: "{{ ns01_ip }}"
+
+    - name: Подсказка при входе
+      template:
+        src: motd.j2
+        dest: /etc/motd
+        owner: root
+        group: root
+        mode: "0644"

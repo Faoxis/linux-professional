@@ -1,0 +1,98 @@
+// Сгенерировано ansible из templates/named.conf.j2.
+// Один шаблон на оба сервера: ns01 отдаёт зоны как master, ns02 забирает их
+// как slave, всё остальное совпадает.
+{% set is_master = inventory_hostname == 'ns01' %}
+{% set own_ip = ns01_ip if is_master else ns02_ip %}
+
+options {
+        // На каком адресе и порту слушаем.
+        listen-on port 53 { 127.0.0.1; {{ own_ip }}; };
+        // IPv6 у стенда нет: адрес на eth0 раздаёт NAT VirtualBox, наружу
+        // он не маршрутизируется. named же по умолчанию предпочитает IPv6
+        // и уходит в таймаут на каждом рекурсивном запросе, поэтому здесь
+        // не слушаем IPv6, а исходящие запросы прибиты к IPv4 ключом -4
+        // в /etc/sysconfig/named.
+        listen-on-v6 { none; };
+
+        directory       "/var/named";
+        dump-file       "/var/named/data/cache_dump.db";
+        statistics-file "/var/named/data/named_stats.txt";
+        memstatistics-file "/var/named/data/named_mem_stats.txt";
+        pid-file        "/run/named/named.pid";
+        session-keyfile "/run/named/session.key";
+
+        // Сервер рекурсивный, спрашивать его может кто угодно.
+        recursion yes;
+        allow-query { any; };
+
+        // Ключи корня bind тянет сам, класть их в каталог с зонами нельзя:
+        // туда ему запрещено писать, а managed-keys он переписывает.
+        dnssec-validation auto;
+        managed-keys-directory "{{ dynamic_dir }}";
+};
+
+logging {
+        channel default_debug {
+                file "data/named.run";
+                severity dynamic;
+        };
+};
+
+// Ключи TSIG сгенерированы на ns01 утилитой tsig-keygen.
+{% for k in tsig_keys %}
+include "{{ keys_dir }}/{{ k }}.key";
+{% endfor %}
+
+controls {
+        inet 127.0.0.1 allow { localhost; } keys { "rndc-key"; };
+        inet {{ own_ip }} allow { {{ client_ip }}; {{ client2_ip }}; } keys { "rndc-key"; };
+};
+
+// Списки доступа, по которым запрос раскладывается по представлениям.
+// Совпадение по адресу - для обычных запросов, совпадение по ключу - чтобы
+// в то же представление мог попасть кто угодно, у кого ключ есть
+// (этим и пользуется ns02, когда забирает зоны).
+// Отрицание чужого ключа стоит первым: подписанный чужим ключом запрос
+// не должен проваливаться в это view только потому, что совпал адрес.
+acl "client"  { !key "client2-key"; key "client-key";  {{ client_ip }};  };
+acl "client2" { !key "client-key";  key "client2-key"; {{ client2_ip }}; };
+
+{% for v in views %}
+view "{{ v.name }}" {
+        match-clients { {{ v.match | default(v.name) }}; };
+
+        // Корневые подсказки и localhost нужны каждому представлению отдельно:
+        // зона, объявленная вне view, невидима изнутри.
+        zone "." IN {
+                type hint;
+                file "named.ca";
+        };
+        include "/etc/named.rfc1912.zones";
+
+{% if is_master %}
+        // Уведомляем только ns02 и только ключом этого представления, иначе
+        // он получил бы уведомление в default и обновил бы не ту копию зоны.
+{% endif %}
+{% for z in v.zones %}
+        zone "{{ z.name }}" IN {
+{% if is_master %}
+                type master;
+                file "{{ (dynamic_dir if z.dynamic | default(false) else zones_dir) ~ '/' ~ z.file }}";
+                allow-transfer { key "{{ v.key }}"; };
+{% if z.dynamic | default(false) %}
+                allow-update { key "{{ v.key }}"; };
+{% endif %}
+                notify explicit;
+                also-notify { {{ ns02_ip }} key "{{ v.key }}"; };
+{% else %}
+                type slave;
+                masters { {{ ns01_ip }} key "{{ v.key }}"; };
+                file "{{ slaves_dir }}/{{ v.name }}/{{ z.file }}";
+                notify no;
+{% endif %}
+        };
+
+{% endfor %}
+};
+
+{% endfor %}

@@ -1,0 +1,21 @@
+### Стенд split-dns ###
+
+Этой машине DNS отдаёт своё представление зон. Проверить:
+
+    dig +short web1.dns.lab
+    dig +short web2.dns.lab
+    dig +short www.newdns.lab
+
+Спросить конкретный сервер, чтобы сравнить мастер и слейв:
+
+    dig @{{ ns01_ip }} +short web2.dns.lab
+    dig @{{ ns02_ip }} +short web2.dns.lab
+
+Подписать запрос своим ключом TSIG - и попасть в то же представление
+с любого адреса:
+
+    dig -k ~/{{ own_tsig_key }}.key @{{ ns01_ip }} +short web2.dns.lab
+
+Управление сервером через rndc:
+
+    rndc -c ~/rndc.conf status

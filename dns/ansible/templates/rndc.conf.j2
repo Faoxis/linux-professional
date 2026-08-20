@@ -1,0 +1,9 @@
+# Сгенерировано ansible из templates/rndc.conf.j2
+# Ключ не дублируем, а подключаем: секрет лежит ровно в одном файле.
+include "{{ rndc_key_file }}";
+
+options {
+    default-key "rndc-key";
+    default-server {{ rndc_server }};
+    default-port 953;
+};

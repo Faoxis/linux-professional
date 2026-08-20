@@ -1,0 +1,50 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Стенд взят из https://github.com/erlong15/vagrant-bind и расширен:
+# добавлена четвёртая машина client2.
+#
+# Коробка centos/7 из исходного стенда снята с поддержки и убрана из
+# Vagrant Cloud, поэтому берём almalinux/9 - та же RHEL-семья, тот же bind,
+# тот же SELinux в enforcing из коробки.
+#
+# Адаптер N в vagrant соответствует интерфейсу ethN-1 в госте,
+# eth0 везде занят под NAT, который поднимает сам vagrant.
+# eth1 - внутренняя сеть стенда, наружу не торчит.
+MACHINES = {
+  :ns01    => { :ip => "192.168.50.10", :memory => 1024 },
+  :ns02    => { :ip => "192.168.50.11", :memory => 1024 },
+  :client  => { :ip => "192.168.50.15", :memory => 512  },
+  :client2 => { :ip => "192.168.50.16", :memory => 512  },
+}
+
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.define boxname do |box|
+      box.vm.box = "almalinux/9"
+      box.vm.host_name = boxname.to_s
+
+      box.vm.provider :virtualbox do |v|
+        v.memory = boxconfig[:memory]
+        v.cpus = 1
+      end
+
+      box.vm.network "private_network",
+        ip: boxconfig[:ip], virtualbox__intnet: "dns"
+
+      # Ansible запускаем один раз, когда поднялась последняя машина,
+      # иначе он стартовал бы после каждой и падал на ещё не созданных хостах.
+      if boxname == MACHINES.keys.last
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = {
+            "servers" => ["ns01", "ns02"],
+            "clients" => ["client", "client2"],
+          }
+        end
+      end
+    end
+  end
+end

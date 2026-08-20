@@ -1,0 +1,98 @@
+---
+# Адресация стенда: как в исходном стенде, добавлен только client2.
+ns01_ip: 192.168.50.10
+ns02_ip: 192.168.50.11
+client_ip: 192.168.50.15
+client2_ip: 192.168.50.16
+
+# Каталоги под файлы зон разложены так, чтобы штатная политика SELinux
+# разрешала named ровно то, что ему нужно, и ни одного правила не пришлось
+# дописывать руками:
+#   zones_dir   - тип named_zone_t,  named только читает (статические мастер-зоны)
+#   dynamic_dir - тип named_cache_t, named пишет журнал (зона под nsupdate)
+#   slaves_dir  - тип named_cache_t, named пишет копии зон, взятые с мастера
+zones_dir: /var/named/zones
+dynamic_dir: /var/named/dynamic
+slaves_dir: /var/named/slaves
+
+# Ключи TSIG генерируются на ns01 при первом прогоне и разъезжаются оттуда.
+# В репозитории их нет и быть не должно.
+keys_dir: /etc/named/keys
+tsig_keys:
+  - zonetransfer-key  # перенос зон в default view, он же ключ для nsupdate
+  - client-key        # им подписывается всё, что должно попасть во view client
+  - client2-key       # то же самое для view client2
+  - rndc-key          # управление сервером с клиентов
+
+# Общий serial для всех зон. Правите записи - увеличьте на единицу,
+# иначе ns02 не заметит изменений и останется со старой копией.
+zone_serial: 2026081901
+
+# Описание файлов зон. Один шаблон zone.j2 разворачивается в пять файлов.
+# Зона dns.lab существует в двух вариантах: полном и урезанном под client1.
+zone_files:
+  - name: dns.lab.full
+    origin: dns.lab
+    records:
+      - { name: ns01, data: "{{ ns01_ip }}" }
+      - { name: ns02, data: "{{ ns02_ip }}" }
+      - { name: web1, data: "{{ client_ip }}" }
+      - { name: web2, data: "{{ client2_ip }}" }
+
+  - name: dns.lab.web1
+    origin: dns.lab
+    records:
+      - { name: ns01, data: "{{ ns01_ip }}" }
+      - { name: ns02, data: "{{ ns02_ip }}" }
+      - { name: web1, data: "{{ client_ip }}" }
+
+  - name: dns.lab.rev
+    origin: 50.168.192.in-addr.arpa
+    records:
+      - { name: 10, type: PTR, data: ns01.dns.lab. }
+      - { name: 11, type: PTR, data: ns02.dns.lab. }
+      - { name: 15, type: PTR, data: web1.dns.lab. }
+      - { name: 16, type: PTR, data: web2.dns.lab. }
+
+  # www смотрит сразу на обе клиентские машины: две A-записи с одним именем.
+  - name: newdns.lab
+    origin: newdns.lab
+    records:
+      - { name: ns01, data: "{{ ns01_ip }}" }
+      - { name: ns02, data: "{{ ns02_ip }}" }
+      - { name: www,  data: "{{ client_ip }}" }
+      - { name: www,  data: "{{ client2_ip }}" }
+
+  # Зона из исходного стенда, живёт под nsupdate.
+  - name: ddns.lab
+    origin: ddns.lab
+    dynamic: true
+    records:
+      - { name: ns01, data: "{{ ns01_ip }}" }
+      - { name: ns02, data: "{{ ns02_ip }}" }
+
+# Представления. Порядок важен: клиент попадает в первое подошедшее view
+# и видит только его зоны, поэтому default с match-clients { any; } идёт
+# последним. Ключ view - это ещё и ключ, которым ns02 забирает зоны:
+# подписав запрос, он сам попадает в нужное представление.
+views:
+  - name: client
+    key: client-key
+    zones:
+      - { name: dns.lab,    file: dns.lab.web1 }
+      - { name: newdns.lab, file: newdns.lab }
+
+  - name: client2
+    key: client2-key
+    zones:
+      - { name: dns.lab,                  file: dns.lab.full }
+      - { name: 50.168.192.in-addr.arpa,  file: dns.lab.rev }
+
+  - name: default
+    match: any
+    key: zonetransfer-key
+    zones:
+      - { name: dns.lab,                  file: dns.lab.full }
+      - { name: 50.168.192.in-addr.arpa,  file: dns.lab.rev }
+      - { name: newdns.lab,               file: newdns.lab }
+      - { name: ddns.lab,                 file: ddns.lab, dynamic: true }

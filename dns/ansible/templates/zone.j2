@@ -1,0 +1,17 @@
+; {{ z.origin }} - файл сгенерирован ansible из templates/zone.j2, править бесполезно
+$TTL 3600
+$ORIGIN {{ z.origin }}.
+@               IN      SOA     ns01.dns.lab. root.dns.lab. (
+                            {{ zone_serial }} ; serial
+                            3600       ; refresh (1 hour)
+                            600        ; retry (10 minutes)
+                            86400      ; expire (1 day)
+                            600        ; minimum (10 minutes)
+                        )
+
+                IN      NS      ns01.dns.lab.
+                IN      NS      ns02.dns.lab.
+
+{% for r in z.records %}
+{{ "%-15s" | format(r.name) }} IN      {{ "%-7s" | format(r.type | default("A")) }} {{ r.data }}
+{% endfor %}

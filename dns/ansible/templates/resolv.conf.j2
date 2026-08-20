@@ -1,0 +1,11 @@
+# Сгенерировано ansible из templates/resolv.conf.j2
+domain dns.lab
+search dns.lab
+{% if 'servers' in group_names %}
+# Сервер спрашивает сам себя: так запрос приходит с собственного адреса
+# и попадает в представление default, где видны все зоны целиком.
+nameserver {{ ns01_ip if inventory_hostname == 'ns01' else ns02_ip }}
+{% else %}
+nameserver {{ ns01_ip }}
+nameserver {{ ns02_ip }}
+{% endif %}
