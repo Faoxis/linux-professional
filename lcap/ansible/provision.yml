@@ -1,0 +1,123 @@
+---
+- name: Общая подготовка
+  hosts: all
+  become: true
+  tasks:
+    - name: Поставить утилиты на RHEL-семье
+      dnf:
+        name: [vim, traceroute, tcpdump, net-tools]
+        state: present
+      when: ansible_os_family == 'RedHat'
+
+    - name: Поставить утилиты на Debian-семье
+      apt:
+        name: [vim, traceroute, tcpdump, net-tools]
+        state: present
+        update_cache: true
+      when: ansible_os_family == 'Debian'
+
+# Один play на всю RHEL-семью: и обычные интерфейсы, и влан, и бонд
+# описываются профилями NetworkManager, отличается только тип профиля.
+- name: Сеть на хостах RHEL-семьи
+  hosts: all
+  become: true
+  tasks:
+    - name: Настроить профили NetworkManager
+      when: ansible_os_family == 'RedHat'
+      block:
+        - name: Профили обычных интерфейсов
+          template:
+            src: ethernet.nmconnection.j2
+            dest: "/etc/NetworkManager/system-connections/{{ iface.name }}.nmconnection"
+            owner: root
+            group: root
+            # Профили с правами шире 0600 NetworkManager просто игнорирует
+            mode: "0600"
+          loop: "{{ interfaces | default([]) }}"
+          loop_control:
+            loop_var: iface
+            label: "{{ iface.name }}"
+          notify: применить профили NetworkManager
+
+        - name: Профиль влана
+          template:
+            src: vlan.nmconnection.j2
+            dest: "/etc/NetworkManager/system-connections/vlan{{ vlan_id }}.nmconnection"
+            owner: root
+            group: root
+            mode: "0600"
+          when: vlan_id is defined
+          notify: применить профили NetworkManager
+
+        - name: Профиль бонда
+          template:
+            src: bond.nmconnection.j2
+            dest: /etc/NetworkManager/system-connections/bond0.nmconnection
+            owner: root
+            group: root
+            mode: "0600"
+          when: bond_ip is defined
+          notify: применить профили NetworkManager
+
+        - name: Профили портов бонда
+          template:
+            src: bond-port.nmconnection.j2
+            dest: "/etc/NetworkManager/system-connections/bond0-{{ port }}.nmconnection"
+            owner: root
+            group: root
+            mode: "0600"
+          loop: "{{ bond_ports }}"
+          loop_control:
+            loop_var: port
+          when: bond_ip is defined
+          notify: применить профили NetworkManager
+
+        # Поднимаем только то, что положили сами. Трогать профиль eth0
+        # нельзя: по нему идёт ssh, которым нас сюда и пустили.
+        - name: Составить список профилей для активации
+          set_fact:
+            nm_profiles: >-
+              {{ (['bond0'] + (bond_ports | map('regex_replace', '^', 'bond0-') | list)
+                   if bond_ip is defined else [])
+                 + (interfaces | default([]) | map(attribute='name') | list)
+                 + (['vlan' ~ vlan_id] if vlan_id is defined else []) }}
+
+  handlers:
+    - name: применить профили NetworkManager
+      shell: |
+        set -e
+        nmcli connection reload
+        for c in {{ nm_profiles | join(' ') }}; do
+            nmcli connection up "$c" >/dev/null
+        done
+
+- name: Вланы на хостах Debian-семьи
+  hosts: all
+  become: true
+  tasks:
+    - name: Положить конфигурацию netplan
+      template:
+        src: 60-vlan.yaml.j2
+        dest: /etc/netplan/60-vlan.yaml
+        owner: root
+        group: root
+        # netplan ругается на конфиги, доступные всем на чтение
+        mode: "0600"
+      when: ansible_os_family == 'Debian'
+      notify: применить netplan
+
+  handlers:
+    - name: применить netplan
+      command: netplan apply
+
+- name: Маршрутизация
+  hosts: routers
+  become: true
+  tasks:
+    - name: Включить форвардинг
+      sysctl:
+        name: net.ipv4.conf.all.forwarding
+        value: '1'
+        sysctl_set: true
+        state: present
+        reload: true

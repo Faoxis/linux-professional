@@ -1,0 +1,5 @@
+bond_ip: 192.168.255.2
+
+interfaces:
+  - name: eth3
+    address: 192.168.255.9/30

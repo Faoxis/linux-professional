@@ -1,0 +1,27 @@
+# Сгенерировано ansible из templates/bond.nmconnection.j2
+[connection]
+id=bond0
+type=bond
+interface-name=bond0
+autoconnect=true
+
+[bond]
+mode={{ bond_mode }}
+# Как часто опрашивать состояние линка, миллисекунды
+miimon=100
+# Партнёр шлёт LACPDU раз в секунду вместо раза в 30 секунд:
+# отвалившийся линк замечается быстрее
+lacp_rate=fast
+# Балансировка по паре MAC и IP, иначе весь трафик между двумя
+# соседями лёг бы в один порт
+xmit_hash_policy=layer2+3
+
+[ipv4]
+method=manual
+address1={{ bond_ip }}/{{ bond_prefix }}
+{% for r in bond_routes | default([]) %}
+route{{ loop.index }}={{ r.to }},{{ r.via }}
+{% endfor %}
+
+[ipv6]
+method=disabled

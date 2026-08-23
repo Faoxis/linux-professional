@@ -1,0 +1,76 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Стенд продолжает сетевую лабораторию из ../network: там inetRouter и
+# centralRouter соединял один линк router-net, здесь их два и они собраны в бонд.
+#
+# Адаптер N в vagrant соответствует интерфейсу eth(N-1) в госте,
+# eth0 везде занят под NAT, который поднимает сам vagrant.
+#
+# auto_config: false у всех адресов: их раздаёт ansible. Иначе vagrant писал бы
+# свой конфиг и переписывал его на каждом up, конфликтуя с нашим.
+#
+# Коробки разные намеренно: на RHEL-семье vlan и бонд настраиваются профилями
+# NetworkManager, на Ubuntu - через netplan. Обе схемы в одном стенде.
+ALMA   = "almalinux/9"
+UBUNTU = "bento/ubuntu-22.04"
+
+MACHINES = {
+  # Два физических линка до centralRouter, оба уйдут в bond0.
+  :inetRouter    => { :box => ALMA, :memory => 1024, :net => [
+                        [2, "bond-link1"], [3, "bond-link2"] ] },
+
+  :centralRouter => { :box => ALMA, :memory => 1024, :net => [
+                        [2, "bond-link1"], [3, "bond-link2"],
+                        [4, "office1-central"] ] },
+
+  # eth2 - порт в testLAN без адреса, с него смотрим на тегированные кадры.
+  :office1Router => { :box => ALMA, :memory => 1024, :net => [
+                        [2, "office1-central"], [3, "testLAN"] ] },
+
+  :testClient1   => { :box => ALMA,   :memory => 768, :net => [[2, "testLAN"]] },
+  :testServer1   => { :box => ALMA,   :memory => 768, :net => [[2, "testLAN"]] },
+  :testClient2   => { :box => UBUNTU, :memory => 768, :net => [[2, "testLAN"]] },
+  :testServer2   => { :box => UBUNTU, :memory => 768, :net => [[2, "testLAN"]] },
+}
+
+Vagrant.configure("2") do |config|
+  MACHINES.each do |boxname, boxconfig|
+    config.vm.define boxname do |box|
+      box.vm.box = boxconfig[:box]
+      box.vm.host_name = boxname.to_s
+
+      box.vm.provider :virtualbox do |v|
+        v.memory = boxconfig[:memory]
+        v.cpus = 1
+
+        # Порт бонда отдаёт кадры с общим MAC-адресом, а порт-наблюдатель
+        # должен видеть чужой трафик. И то и другое режется, пока адаптер
+        # не переведён в неразборчивый режим.
+        boxconfig[:net].each do |adapter, _intnet|
+          v.customize ["modifyvm", :id, "--nicpromisc#{adapter}", "allow-all"]
+        end
+      end
+
+      boxconfig[:net].each do |adapter, intnet|
+        box.vm.network "private_network",
+          adapter: adapter, auto_config: false, virtualbox__intnet: intnet
+      end
+
+      # Ansible запускаем один раз, когда поднялась последняя машина,
+      # иначе он стартовал бы после каждой и падал на ещё не созданных хостах.
+      if boxname == MACHINES.keys.last
+        box.vm.provision "ansible" do |ansible|
+          ansible.playbook = "ansible/provision.yml"
+          ansible.host_key_checking = "false"
+          ansible.limit = "all"
+          ansible.groups = {
+            "routers"    => ["inetRouter", "centralRouter", "office1Router"],
+            "bonded"     => ["inetRouter", "centralRouter"],
+            "vlan_hosts" => ["testClient1", "testServer1", "testClient2", "testServer2"],
+          }
+        end
+      end
+    end
+  end
+end

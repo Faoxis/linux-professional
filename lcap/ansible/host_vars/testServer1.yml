@@ -1,0 +1,5 @@
+vlan_id: 1
+vlan_ip: 10.10.10.1
+
+interfaces:
+  - name: eth1

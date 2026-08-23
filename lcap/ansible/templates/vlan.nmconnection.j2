@@ -1,0 +1,19 @@
+# Сгенерировано ansible из templates/vlan.nmconnection.j2
+[connection]
+id=vlan{{ vlan_id }}
+type=vlan
+interface-name={{ vlan_parent }}.{{ vlan_id }}
+autoconnect=true
+
+[vlan]
+# Физический порт, в кадры которого проставляется тег
+parent={{ vlan_parent }}
+# Номер влана, он же тег в заголовке 802.1Q
+id={{ vlan_id }}
+
+[ipv4]
+method=manual
+address1={{ vlan_ip }}/{{ vlan_prefix }}
+
+[ipv6]
+method=disabled

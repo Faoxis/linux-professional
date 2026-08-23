@@ -1,0 +1,15 @@
+# Сгенерировано ansible из templates/60-vlan.yaml.j2
+network:
+  version: 2
+  ethernets:
+    # Порт в testLAN: адреса нет, он только несёт тегированные кадры
+    {{ vlan_parent }}:
+      dhcp4: no
+      dhcp6: no
+  vlans:
+    vlan{{ vlan_id }}:
+      id: {{ vlan_id }}
+      link: {{ vlan_parent }}
+      dhcp4: no
+      dhcp6: no
+      addresses: [{{ vlan_ip }}/{{ vlan_prefix }}]

@@ -1,0 +1,21 @@
+# Сгенерировано ansible из templates/ethernet.nmconnection.j2
+[connection]
+id={{ iface.name }}
+type=ethernet
+interface-name={{ iface.name }}
+autoconnect=true
+
+[ipv4]
+{% if iface.address is defined %}
+method=manual
+address1={{ iface.address }}
+{% for r in iface.routes | default([]) %}
+route{{ loop.index }}={{ r.to }},{{ r.via }}
+{% endfor %}
+{% else %}
+# Адреса нет: интерфейс нужен только чтобы быть поднятым.
+method=disabled
+{% endif %}
+
+[ipv6]
+method=disabled

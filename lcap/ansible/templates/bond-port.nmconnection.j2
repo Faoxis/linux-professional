@@ -1,0 +1,16 @@
+# Сгенерировано ansible из templates/bond-port.nmconnection.j2
+[connection]
+id=bond0-{{ port }}
+type=ethernet
+interface-name={{ port }}
+# Порт отдан бонду: своего адреса у него нет и быть не должно
+master=bond0
+slave-type=bond
+autoconnect=true
+
+[ethernet]
+# В 802.3ad ядро переписывает MAC всех портов на общий MAC бонда, а
+# VirtualBox кадры на переписанный адрес до гостя не доносит: у адаптера
+# в настройках ВМ прописан другой MAC. Неразборчивый режим снимает этот
+# фильтр. На железе строка не нужна, здесь без неё половина трафика теряется.
+accept-all-mac-addresses=1
